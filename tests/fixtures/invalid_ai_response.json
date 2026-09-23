@@ -1,0 +1,14 @@
+{
+  "candidates": [
+    {
+      "start": "eight seconds",
+      "end": 28,
+      "title": "Malformed candidate",
+      "hook": "This must be rejected",
+      "category": "test",
+      "reason": "The timestamp is not numeric",
+      "scores": {"hook": 900, "standalone_context": 85}
+    }
+  ]
+}
+

@@ -1,0 +1,23 @@
+{
+  "candidates": [
+    {
+      "start": 8,
+      "end": 28,
+      "title": "Useful moment",
+      "hook": "This works",
+      "category": "education",
+      "reason": "Complete thought",
+      "scores": {"hook": 90, "standalone_context": 85, "payoff": 80, "emotion": 40}
+    },
+    {
+      "start": 40,
+      "end": 55,
+      "title": "Second moment",
+      "hook": "Another idea",
+      "category": "story",
+      "reason": "Clear payoff",
+      "scores": {"hook": 82, "standalone_context": 88, "payoff": 91}
+    }
+  ]
+}
+

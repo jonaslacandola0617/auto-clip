@@ -1,0 +1,8 @@
+{
+  "otio": [
+    "clip_001: dynamic reframe track is stored in AutoClip data but not recreated as an OTIO effect"
+  ],
+  "premiere_xml": [
+    "clip_001: dynamic reframe track cannot be faithfully represented by this minimal XMEML adapter"
+  ]
+}

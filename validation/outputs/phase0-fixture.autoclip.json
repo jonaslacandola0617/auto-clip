@@ -1,0 +1,381 @@
+{
+  "id": "project_001",
+  "name": "Fixture Project",
+  "sources": [
+    {
+      "id": "media_001",
+      "reference": "C:/fixtures/source.mp4",
+      "fingerprint": {
+        "size": 12345,
+        "partial_sha256": "fixture"
+      },
+      "duration": {
+        "value": 3600000,
+        "time_base": {
+          "numerator": 1,
+          "denominator": 30000
+        }
+      },
+      "width": 1920,
+      "height": 1080,
+      "frame_rate": {
+        "numerator": 30000,
+        "denominator": 1001
+      },
+      "time_base": {
+        "numerator": 1,
+        "denominator": 30000
+      },
+      "streams": [
+        {
+          "index": 0,
+          "codec": "h264",
+          "kind": "video",
+          "channels": null,
+          "sample_rate": null
+        },
+        {
+          "index": 1,
+          "codec": "aac",
+          "kind": "audio",
+          "channels": 2,
+          "sample_rate": 48000
+        }
+      ],
+      "rotation": 0,
+      "variable_frame_rate": false,
+      "vfr_fallback": null
+    }
+  ],
+  "transcripts": [
+    {
+      "revision_id": "transcript_001",
+      "language": "en",
+      "segments": [
+        {
+          "id": "s1",
+          "start": {
+            "value": 300000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "end": {
+            "value": 360000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "text": "This works",
+          "word_ids": [
+            "w1",
+            "w2"
+          ],
+          "corrected_text": null
+        },
+        {
+          "id": "s2",
+          "start": {
+            "value": 1200000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "end": {
+            "value": 1260000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "text": "Second moment",
+          "word_ids": [
+            "w3",
+            "w4"
+          ],
+          "corrected_text": null
+        }
+      ],
+      "words": [
+        {
+          "id": "w1",
+          "start": {
+            "value": 300000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "end": {
+            "value": 330000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "text": "This",
+          "corrected_text": null
+        },
+        {
+          "id": "w2",
+          "start": {
+            "value": 330000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "end": {
+            "value": 360000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "text": "works",
+          "corrected_text": null
+        },
+        {
+          "id": "w3",
+          "start": {
+            "value": 1200000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "end": {
+            "value": 1230000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "text": "Second",
+          "corrected_text": null
+        },
+        {
+          "id": "w4",
+          "start": {
+            "value": 1230000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "end": {
+            "value": 1260000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "text": "moment",
+          "corrected_text": null
+        }
+      ],
+      "model": "fixture"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "candidate_001",
+      "source_start": {
+        "value": 240000,
+        "time_base": {
+          "numerator": 1,
+          "denominator": 30000
+        }
+      },
+      "source_end": {
+        "value": 840000,
+        "time_base": {
+          "numerator": 1,
+          "denominator": 30000
+        }
+      },
+      "title": "Useful moment",
+      "hook": "This works",
+      "category": "education",
+      "reason": "Complete thought",
+      "scores": {
+        "hook": 90,
+        "standalone_context": 85,
+        "payoff": 80,
+        "emotion": 40
+      },
+      "provider_provenance": {
+        "provider": "fixture",
+        "model": "fixture"
+      }
+    }
+  ],
+  "timelines": [
+    {
+      "id": "timeline_001",
+      "canvas_width": 1080,
+      "canvas_height": 1920,
+      "frame_rate": {
+        "numerator": 30000,
+        "denominator": 1001
+      },
+      "clips": [
+        {
+          "id": "clip_001",
+          "source_id": "media_001",
+          "source_in": {
+            "value": 240,
+            "time_base": {
+              "numerator": 1001,
+              "denominator": 30000
+            }
+          },
+          "source_out": {
+            "value": 840,
+            "time_base": {
+              "numerator": 1001,
+              "denominator": 30000
+            }
+          },
+          "title": "First",
+          "reframe_track_id": "reframe_001",
+          "caption_track_id": "caption_001",
+          "markers": [
+            {
+              "at": {
+                "value": 240,
+                "time_base": {
+                  "numerator": 1001,
+                  "denominator": 30000
+                }
+              },
+              "label": "hook"
+            }
+          ]
+        },
+        {
+          "id": "clip_002",
+          "source_id": "media_001",
+          "source_in": {
+            "value": 1200,
+            "time_base": {
+              "numerator": 1001,
+              "denominator": 30000
+            }
+          },
+          "source_out": {
+            "value": 1650,
+            "time_base": {
+              "numerator": 1001,
+              "denominator": 30000
+            }
+          },
+          "title": "Second",
+          "reframe_track_id": null,
+          "caption_track_id": null,
+          "markers": []
+        }
+      ]
+    }
+  ],
+  "reframe_tracks": [
+    {
+      "id": "reframe_001",
+      "points": [
+        {
+          "at": {
+            "value": 240000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "subject_x": 0.5,
+          "subject_y": 0.5,
+          "crop_x": 0.5,
+          "crop_y": 0.5,
+          "scale": 1.0,
+          "confidence": null,
+          "detected": false
+        },
+        {
+          "at": {
+            "value": 270000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "subject_x": 0.5,
+          "subject_y": 0.5,
+          "crop_x": 0.5,
+          "crop_y": 0.5,
+          "scale": 1.0,
+          "confidence": null,
+          "detected": false
+        },
+        {
+          "at": {
+            "value": 300000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "subject_x": 0.5,
+          "subject_y": 0.5,
+          "crop_x": 0.5,
+          "crop_y": 0.5,
+          "scale": 1.0,
+          "confidence": null,
+          "detected": false
+        }
+      ],
+      "smoothing": {
+        "algorithm": "exponential_moving_average",
+        "alpha": 0.2,
+        "max_lost_frames": 30,
+        "lost_behavior": "hold_then_ease_to_center"
+      },
+      "manual_override": {
+        "enabled": false,
+        "crop_x": 0.5,
+        "crop_y": 0.5,
+        "scale": 1.0
+      }
+    }
+  ],
+  "caption_tracks": [
+    {
+      "id": "caption_001",
+      "cues": [
+        {
+          "start": {
+            "value": 240000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "end": {
+            "value": 300000,
+            "time_base": {
+              "numerator": 1,
+              "denominator": 30000
+            }
+          },
+          "text": "This works",
+          "word_ids": [
+            "w1",
+            "w2"
+          ],
+          "editable_text_override": "This really works"
+        }
+      ]
+    }
+  ],
+  "schema_version": "0.2-phase0"
+}

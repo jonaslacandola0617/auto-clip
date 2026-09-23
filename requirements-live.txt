@@ -1,0 +1,6 @@
+faster-whisper==1.2.1
+mediapipe==1.0.1
+opencv-python-headless==5.0.0.93
+opentimelineio==0.18.1
+static-ffmpeg==3.0
+

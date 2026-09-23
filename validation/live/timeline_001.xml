@@ -1,0 +1,91 @@
+<?xml version='1.0' encoding='utf-8'?>
+<xmeml version="4">
+  <sequence id="timeline_001">
+    <name>timeline_001</name>
+    <rate>
+      <timebase>30</timebase>
+      <ntsc>TRUE</ntsc>
+    </rate>
+    <media>
+      <video>
+        <format>
+          <samplecharacteristics>
+            <width>1080</width>
+            <height>1920</height>
+          </samplecharacteristics>
+        </format>
+        <track>
+          <clipitem id="video-clip_001-1">
+            <name>First</name>
+            <start>0</start>
+            <end>600</end>
+            <in>240</in>
+            <out>840</out>
+            <file id="file-media_001">
+              <name>source.mp4</name>
+              <pathurl>file://localhost/C%3A/fixtures/source.mp4</pathurl>
+              <duration>3596</duration>
+              <rate>
+                <timebase>30</timebase>
+                <ntsc>TRUE</ntsc>
+              </rate>
+            </file>
+          </clipitem>
+          <clipitem id="video-clip_002-2">
+            <name>Second</name>
+            <start>600</start>
+            <end>1050</end>
+            <in>1200</in>
+            <out>1650</out>
+            <file id="file-media_001">
+              <name>source.mp4</name>
+              <pathurl>file://localhost/C%3A/fixtures/source.mp4</pathurl>
+              <duration>3596</duration>
+              <rate>
+                <timebase>30</timebase>
+                <ntsc>TRUE</ntsc>
+              </rate>
+            </file>
+          </clipitem>
+        </track>
+      </video>
+      <audio>
+        <track>
+          <clipitem id="audio-clip_001-1">
+            <name>First</name>
+            <start>0</start>
+            <end>600</end>
+            <in>240</in>
+            <out>840</out>
+            <file id="file-media_001">
+              <name>source.mp4</name>
+              <pathurl>file://localhost/C%3A/fixtures/source.mp4</pathurl>
+              <duration>3596</duration>
+              <rate>
+                <timebase>30</timebase>
+                <ntsc>TRUE</ntsc>
+              </rate>
+            </file>
+          </clipitem>
+          <clipitem id="audio-clip_002-2">
+            <name>Second</name>
+            <start>600</start>
+            <end>1050</end>
+            <in>1200</in>
+            <out>1650</out>
+            <file id="file-media_001">
+              <name>source.mp4</name>
+              <pathurl>file://localhost/C%3A/fixtures/source.mp4</pathurl>
+              <duration>3596</duration>
+              <rate>
+                <timebase>30</timebase>
+                <ntsc>TRUE</ntsc>
+              </rate>
+            </file>
+          </clipitem>
+        </track>
+      </audio>
+    </media>
+    <duration>1050</duration>
+  </sequence>
+</xmeml>

@@ -1,0 +1,212 @@
+{
+  "OTIO_SCHEMA": "Timeline.1",
+  "name": "timeline_001",
+  "global_start_time": {
+    "OTIO_SCHEMA": "RationalTime.1",
+    "value": 0.0,
+    "rate": 29.97002997002997
+  },
+  "tracks": {
+    "OTIO_SCHEMA": "Stack.1",
+    "name": "tracks",
+    "source_range": null,
+    "effects": [],
+    "markers": [],
+    "enabled": true,
+    "color": null,
+    "children": [
+      {
+        "OTIO_SCHEMA": "Track.1",
+        "name": "V1",
+        "kind": "Video",
+        "source_range": null,
+        "effects": [],
+        "markers": [],
+        "enabled": true,
+        "color": null,
+        "children": [
+          {
+            "OTIO_SCHEMA": "Clip.2",
+            "name": "First",
+            "source_range": {
+              "OTIO_SCHEMA": "TimeRange.1",
+              "start_time": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "value": 240.0,
+                "rate": 29.97002997002997
+              },
+              "duration": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "value": 600.0,
+                "rate": 29.97002997002997
+              }
+            },
+            "media_references": {
+              "DEFAULT_MEDIA": {
+                "OTIO_SCHEMA": "ExternalReference.1",
+                "name": "media_001",
+                "target_url": "file:///C:/fixtures/source.mp4",
+                "available_range": null,
+                "available_image_bounds": null,
+                "metadata": {
+                  "autoclip:fingerprint": {
+                    "size": 12345,
+                    "partial_sha256": "fixture"
+                  }
+                }
+              }
+            },
+            "active_media_reference_key": "DEFAULT_MEDIA",
+            "metadata": {
+              "autoclip:clip_id": "clip_001"
+            },
+            "effects": [],
+            "markers": [],
+            "enabled": true,
+            "color": null
+          },
+          {
+            "OTIO_SCHEMA": "Clip.2",
+            "name": "Second",
+            "source_range": {
+              "OTIO_SCHEMA": "TimeRange.1",
+              "start_time": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "value": 1200.0,
+                "rate": 29.97002997002997
+              },
+              "duration": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "value": 450.0,
+                "rate": 29.97002997002997
+              }
+            },
+            "media_references": {
+              "DEFAULT_MEDIA": {
+                "OTIO_SCHEMA": "ExternalReference.1",
+                "name": "media_001",
+                "target_url": "file:///C:/fixtures/source.mp4",
+                "available_range": null,
+                "available_image_bounds": null,
+                "metadata": {
+                  "autoclip:fingerprint": {
+                    "size": 12345,
+                    "partial_sha256": "fixture"
+                  }
+                }
+              }
+            },
+            "active_media_reference_key": "DEFAULT_MEDIA",
+            "metadata": {
+              "autoclip:clip_id": "clip_002"
+            },
+            "effects": [],
+            "markers": [],
+            "enabled": true,
+            "color": null
+          }
+        ]
+      },
+      {
+        "OTIO_SCHEMA": "Track.1",
+        "name": "A1",
+        "kind": "Audio",
+        "source_range": null,
+        "effects": [],
+        "markers": [],
+        "enabled": true,
+        "color": null,
+        "children": [
+          {
+            "OTIO_SCHEMA": "Clip.2",
+            "name": "First",
+            "source_range": {
+              "OTIO_SCHEMA": "TimeRange.1",
+              "start_time": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "value": 240.0,
+                "rate": 29.97002997002997
+              },
+              "duration": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "value": 600.0,
+                "rate": 29.97002997002997
+              }
+            },
+            "media_references": {
+              "DEFAULT_MEDIA": {
+                "OTIO_SCHEMA": "ExternalReference.1",
+                "name": "media_001",
+                "target_url": "file:///C:/fixtures/source.mp4",
+                "available_range": null,
+                "available_image_bounds": null,
+                "metadata": {
+                  "autoclip:fingerprint": {
+                    "size": 12345,
+                    "partial_sha256": "fixture"
+                  }
+                }
+              }
+            },
+            "active_media_reference_key": "DEFAULT_MEDIA",
+            "metadata": {
+              "autoclip:clip_id": "clip_001",
+              "autoclip:media_kind": "audio"
+            },
+            "effects": [],
+            "markers": [],
+            "enabled": true,
+            "color": null
+          },
+          {
+            "OTIO_SCHEMA": "Clip.2",
+            "name": "Second",
+            "source_range": {
+              "OTIO_SCHEMA": "TimeRange.1",
+              "start_time": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "value": 1200.0,
+                "rate": 29.97002997002997
+              },
+              "duration": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "value": 450.0,
+                "rate": 29.97002997002997
+              }
+            },
+            "media_references": {
+              "DEFAULT_MEDIA": {
+                "OTIO_SCHEMA": "ExternalReference.1",
+                "name": "media_001",
+                "target_url": "file:///C:/fixtures/source.mp4",
+                "available_range": null,
+                "available_image_bounds": null,
+                "metadata": {
+                  "autoclip:fingerprint": {
+                    "size": 12345,
+                    "partial_sha256": "fixture"
+                  }
+                }
+              }
+            },
+            "active_media_reference_key": "DEFAULT_MEDIA",
+            "metadata": {
+              "autoclip:clip_id": "clip_002",
+              "autoclip:media_kind": "audio"
+            },
+            "effects": [],
+            "markers": [],
+            "enabled": true,
+            "color": null
+          }
+        ]
+      }
+    ]
+  },
+  "metadata": {
+    "autoclip:canvas": {
+      "width": 1080,
+      "height": 1920
+    }
+  }
+}

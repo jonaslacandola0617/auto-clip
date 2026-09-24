@@ -18,9 +18,25 @@ export function parseEnvelope<T>(value: unknown): T {
   return envelope.data;
 }
 
-export async function workerRequest<T>(command: string, payload: Record<string, unknown> = {}): Promise<T> {
-  const id = `desktop-${Date.now()}-${++requestSequence}`;
-  const response = await invoke<unknown>("worker_request", { request: { version: "1", id, command, payload } });
-  return parseEnvelope<T>(response);
+function diagnosticMessage(reason: unknown): string {
+  const raw = reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "Unknown desktop bridge error";
+  return raw
+    .replace(/((?:api[_-]?key|token|secret|authorization)\s*[:=]\s*)[^\s,;]+/gi, "$1[redacted]")
+    .replace(/([?&](?:key|token|secret)=)[^&\s]+/gi, "$1[redacted]");
 }
 
+export async function workerRequest<T>(command: string, payload: Record<string, unknown> = {}): Promise<T> {
+  const id = `desktop-${Date.now()}-${++requestSequence}`;
+  try {
+    const response = await invoke<unknown>("worker_request", { request: { version: "1", id, command, payload } });
+    return parseEnvelope<T>(response);
+  } catch (reason) {
+    if (reason instanceof AutoClipError) throw reason;
+    throw new AutoClipError({
+      code: "desktop_bridge_error",
+      message: "AutoClip couldn't reach the processing worker.",
+      details: diagnosticMessage(reason),
+      recoverable: true,
+    });
+  }
+}

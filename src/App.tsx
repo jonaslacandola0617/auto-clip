@@ -80,11 +80,20 @@ export function App() {
     } catch (reason) { reportError(reason); }
   }
 
-  async function startJob(type: string) {
+  async function startProjectJob(type: string, payload: Record<string, unknown> = {}) {
     if (!project) return;
     try {
-      await workerRequest<Job>("start_job", { type, project_path: project.path });
+      await workerRequest<Job>("start_job", { type, project_path: project.path, ...payload });
       await refreshJobs(project.path);
+    } catch (reason) { reportError(reason); }
+  }
+
+  async function mutateProject(command: string, payload: Record<string, unknown>) {
+    if (!project) return;
+    try {
+      const updated = await workerRequest<ProjectState>(command, { project_path: project.path, ...payload });
+      setProject(updated);
+      setError(null);
     } catch (reason) { reportError(reason); }
   }
 
@@ -109,7 +118,7 @@ export function App() {
   return <AppShell activeView={view} projectName={project?.name} onNavigate={setView}>
     {error ? <div className="error-banner" role="alert"><div><strong>{error.message}</strong>{error.details ? <details><summary>View details</summary><pre>{error.details}</pre></details> : null}</div><button aria-label="Dismiss error" onClick={() => setError(null)}>×</button></div> : null}
     {view === "home" ? <HomeView doctor={doctor} recents={recents} loading={loading} onNew={() => setShowNewProject(true)} onOpen={chooseProject} onOpenRecent={openProject} onRemoveRecent={removeRecent} /> : null}
-    {view === "workspace" && project ? <WorkspaceView project={project} doctor={doctor} jobs={jobs} onChooseSource={chooseSource} onStartJob={startJob} onCancelJob={cancelJob} /> : null}
+    {view === "workspace" && project ? <WorkspaceView project={project} doctor={doctor} jobs={jobs} onChooseSource={chooseSource} onStartJob={startProjectJob} onCommand={mutateProject} onCancelJob={cancelJob} /> : null}
     {view === "settings" && settings ? <SettingsView settings={settings} doctor={doctor} onSave={saveSettings} /> : null}
     {showNewProject && settings ? <ProjectDialog defaultLocation={settings.default_project_directory} onClose={() => setShowNewProject(false)} onCreate={createProject} /> : null}
   </AppShell>;

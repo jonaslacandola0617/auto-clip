@@ -1,8 +1,11 @@
+import io
 import json
 import unittest
+import urllib.error
 from pathlib import Path
+from unittest.mock import patch
 
-from autoclip.ai import AIResponseError, validate_candidate_payload
+from autoclip.ai import AIResponseError, GeminiProvider, validate_candidate_payload
 from autoclip.candidates import CandidateValidationError, normalize_and_deduplicate, validate_candidate
 from dataclasses import replace
 
@@ -10,6 +13,13 @@ from tests.helpers import mt, sample_candidate, sample_source, sample_transcript
 
 
 class AICandidateTests(unittest.TestCase):
+    def test_gemini_http_error_preserves_sanitized_provider_message(self) -> None:
+        body = io.BytesIO(json.dumps({"error": {"message": "model retired"}}).encode())
+        error = urllib.error.HTTPError("https://example.invalid", 404, "Not Found", {}, body)
+        with patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, r"Gemini request rejected \(404\): model retired"):
+                GeminiProvider(api_key="secret-fixture").analyze_transcript([], {})
+
     def test_valid_fixture(self) -> None:
         payload = json.loads((Path(__file__).parent / "fixtures" / "valid_ai_response.json").read_text(encoding="utf-8"))
         self.assertEqual(len(validate_candidate_payload(payload)), 2)
@@ -40,4 +50,3 @@ class AICandidateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

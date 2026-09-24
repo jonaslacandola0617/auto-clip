@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .ai import AIProvider
 from .candidates import normalize_and_deduplicate, validate_candidate
-from .media import FFmpegService, media_source_from_probe
+from .media import FFmpegService, MediaOperationCancelled, media_source_from_probe
 from .models import ClipCandidate, MediaSource, ScoreDimensions, Transcript, TranscriptSegment, TranscriptWord
 from .storage import Workspace, atomic_write_json
 from .time import MediaTime
-from .transcription import FasterWhisperTranscriber
+from .transcription import FasterWhisperTranscriber, TranscriptionCancelled
 
 
 def chunk_transcript(transcript: Transcript, *, max_words: int = 800, overlap_words: int = 80) -> list[dict[str, Any]]:
@@ -42,24 +43,83 @@ class CorePipeline:
     provider: AIProvider
     prompt_version: str = "phase0-v1"
 
-    def transcribe_source(self, source: MediaSource) -> Transcript:
-        return self._load_or_transcribe(source)
+    def transcribe_source(
+        self,
+        source: MediaSource,
+        *,
+        progress: Callable[[float, str], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> Transcript:
+        return self._load_or_transcribe(source, progress=progress, cancel_event=cancel_event)
+
+    def analyze_source(self, source: MediaSource, transcript: Transcript) -> list[ClipCandidate]:
+        analysis = self._load_or_analyze(source, transcript)
+        raw_candidates = self.provider.rank_candidates(self.provider.find_candidates(analysis))
+        candidates: list[ClipCandidate] = []
+        for index, raw in enumerate(raw_candidates):
+            candidate = ClipCandidate(
+                id=f"candidate_{index + 1}",
+                source_start=MediaTime.from_seconds(Fraction(str(raw["start"])), source.time_base, exact=False),
+                source_end=MediaTime.from_seconds(Fraction(str(raw["end"])), source.time_base, exact=False),
+                title=raw["title"], hook=raw["hook"], category=raw["category"], reason=raw["reason"],
+                scores=ScoreDimensions(**{**{"emotion": 0}, **raw["scores"]}),
+                provider_provenance={"provider": type(self.provider).__name__, "prompt_version": self.prompt_version},
+            )
+            validate_candidate(candidate, source.duration, transcript)
+            candidates.append(candidate)
+        return normalize_and_deduplicate(candidates)
 
     def run_source(self, source_path: Path, output_dir: Path, *, source_id: str = "media_001") -> tuple[MediaSource, Transcript, list[ClipCandidate]]:
         source = media_source_from_probe(source_id, source_path, self.media.inspect(source_path))
         transcript, candidates = self.run(source, output_dir)
         return source, transcript, candidates
 
-    def _load_or_transcribe(self, source: MediaSource) -> Transcript:
-        key = self.workspace.cache_key("transcription", {"fingerprint": source.fingerprint, "model": self.transcriber.model_size})
+    def _load_or_transcribe(
+        self,
+        source: MediaSource,
+        *,
+        progress: Callable[[float, str], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> Transcript:
+        def report(value: float, stage: str) -> None:
+            if progress:
+                progress(value, stage)
+
+        def cancelled() -> bool:
+            return bool(cancel_event and cancel_event.is_set())
+
+        key = self.workspace.cache_key(
+            "transcription",
+            {
+                "fingerprint": source.fingerprint,
+                "transcriber": getattr(self.transcriber, "cache_identity", {"model": self.transcriber.model_size}),
+            },
+        )
         path = self.workspace.cache_result_path("transcription", key)
         if path.exists():
+            report(0.95, "Using cached transcript")
             data = json.loads(path.read_text(encoding="utf-8"))
         else:
             audio = self.workspace.root / "cache" / "audio" / f"{key}.wav"
             if not audio.exists():
-                self.media.extract_speech_audio(Path(source.reference), audio)
-            data = self.transcriber.transcribe(audio)
+                report(0.05, "Extracting speech audio")
+                try:
+                    self.media.extract_speech_audio(Path(source.reference), audio, cancel_event=cancel_event)
+                except MediaOperationCancelled as exc:
+                    raise TranscriptionCancelled("Audio extraction cancelled safely.") from exc
+            else:
+                report(0.15, "Using cached speech audio")
+            if cancelled():
+                raise TranscriptionCancelled("Transcription cancelled before inference.")
+            data = self.transcriber.transcribe(
+                audio,
+                duration_seconds=float(source.duration.seconds),
+                progress=lambda value, stage: report(0.18 + 0.7 * value, stage),
+                cancelled=cancelled,
+            )
+            if cancelled():
+                raise TranscriptionCancelled("Transcription cancelled before cache write.")
+            report(0.9, "Saving transcript cache")
             atomic_write_json(path, data)
         time_base = source.time_base
         words = [TranscriptWord(
@@ -86,21 +146,7 @@ class CorePipeline:
 
     def run(self, source: MediaSource, output_dir: Path) -> tuple[Transcript, list[ClipCandidate]]:
         transcript = self._load_or_transcribe(source)
-        analysis = self._load_or_analyze(source, transcript)
-        raw_candidates = self.provider.rank_candidates(self.provider.find_candidates(analysis))
-        candidates: list[ClipCandidate] = []
-        for index, raw in enumerate(raw_candidates):
-            candidate = ClipCandidate(
-                id=f"candidate_{index + 1}",
-                source_start=MediaTime.from_seconds(Fraction(str(raw["start"])), source.time_base, exact=False),
-                source_end=MediaTime.from_seconds(Fraction(str(raw["end"])), source.time_base, exact=False),
-                title=raw["title"], hook=raw["hook"], category=raw["category"], reason=raw["reason"],
-                scores=ScoreDimensions(**{**{"emotion": 0}, **raw["scores"]}),
-                provider_provenance={"provider": type(self.provider).__name__, "prompt_version": self.prompt_version},
-            )
-            validate_candidate(candidate, source.duration, transcript)
-            candidates.append(candidate)
-        candidates = normalize_and_deduplicate(candidates)
+        candidates = self.analyze_source(source, transcript)
         for candidate in candidates:
             self.media.extract_clip(Path(source.reference), output_dir / f"{candidate.id}.mp4", candidate.source_start, candidate.source_end)
         return transcript, candidates

@@ -32,7 +32,11 @@ def serve(service: DesktopService) -> int:
             response = failure("unknown", "invalid_json", "The desktop sent an invalid request.")
         else:
             response = handle(service, raw)
-        sys.stdout.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
+        # Keep the stdio protocol ASCII-safe. On Windows a redirected Python
+        # stdout can use a legacy code page, while Tauri's Rust reader expects
+        # UTF-8. Escaping non-ASCII JSON characters prevents progress text such
+        # as the middle dot in transcription stages from corrupting the stream.
+        sys.stdout.write(json.dumps(response, ensure_ascii=True, separators=(",", ":")) + "\n")
         sys.stdout.flush()
     return 0
 
@@ -46,4 +50,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -18,6 +18,26 @@ def wait_for(manager: JobManager, job_id: str, states: set[str], timeout: float 
 
 
 class JobTests(unittest.TestCase):
+    def test_interrupted_job_is_recovered_as_failed_on_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "jobs.json"
+            manager = JobManager(path)
+            started = threading.Event()
+            release = threading.Event()
+
+            def runner(_id, _event, update):
+                update(.25, "Transcribing locally", True)
+                started.set()
+                release.wait(1)
+
+            job = manager.start("transcribe", runner)
+            self.assertTrue(started.wait(1))
+            recovered = JobManager(path).get(job.id)
+            self.assertEqual(recovered.state, "failed")
+            self.assertEqual(recovered.error["code"], "interrupted")
+            release.set()
+            self.assertEqual(wait_for(manager, job.id, {"completed"}), "completed")
+
     def test_job_completes_with_progress(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = JobManager(Path(directory) / "jobs.json")
@@ -64,4 +84,3 @@ class JobTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

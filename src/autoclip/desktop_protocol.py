@@ -20,6 +20,12 @@ COMMANDS = {
     "cancel_job",
     "get_job",
     "list_jobs",
+    "correct_transcript",
+    "create_manual_clip",
+    "create_clip_from_candidate",
+    "update_clip",
+    "delete_clip",
+    "select_clip",
 }
 
 

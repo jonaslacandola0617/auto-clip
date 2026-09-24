@@ -20,7 +20,7 @@ class FakeMedia:
         self.audio_calls = 0
         self.clip_calls = 0
 
-    def extract_speech_audio(self, source: Path, output: Path) -> None:
+    def extract_speech_audio(self, source: Path, output: Path, *, cancel_event=None) -> None:
         self.audio_calls += 1
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"fixture")
@@ -35,7 +35,7 @@ class FakeTranscriber:
     def __init__(self) -> None:
         self.calls = 0
 
-    def transcribe(self, audio: Path):
+    def transcribe(self, audio: Path, **kwargs):
         self.calls += 1
         return {
             "language": "en", "model": "fixture",

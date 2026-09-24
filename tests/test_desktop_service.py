@@ -17,6 +17,18 @@ class DesktopServiceTests(unittest.TestCase):
         project_root.mkdir()
         return DesktopService(root / "app-data", project_root)
 
+    def test_cpu_defaults_use_practical_current_models(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self.make_service(Path(directory)).get_settings()
+            self.assertEqual(settings["whisper_model"], "base")
+            self.assertEqual(settings["gemini_model"], "gemini-3.6-flash")
+
+    def test_retired_default_gemini_model_is_migrated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service = self.make_service(Path(directory))
+            service.settings_path.write_text(json.dumps({"gemini_model": "gemini-2.5-flash"}), encoding="utf-8")
+            self.assertEqual(service.get_settings()["gemini_model"], "gemini-3.6-flash")
+
     def test_project_creation_reopening_and_recents(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

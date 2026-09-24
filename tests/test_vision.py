@@ -1,11 +1,33 @@
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from autoclip.models import ManualCropOverride
-from autoclip.vision import CoordinateMapper, Detection, build_reframe_track, crop_geometry
+from autoclip.vision import CoordinateMapper, Detection, analyze_video_clip, build_reframe_track, crop_geometry
 from tests.helpers import mt
 
 
 class VisionTests(unittest.TestCase):
+    def test_real_media_sampling_uses_media_time_base(self) -> None:
+        class Capture:
+            def isOpened(self): return True
+            def set(self, *_args): return True
+            def read(self): return True, object()
+            def release(self): pass
+
+        class CV2:
+            CAP_PROP_POS_MSEC = 0
+            def VideoCapture(self, _path): return Capture()
+
+        class Detector:
+            _cv2 = CV2()
+            def detect(self, frames): return [None for _ in frames]
+
+        with patch("autoclip.vision.OpenCVFaceDetector", return_value=Detector()):
+            track = analyze_video_clip(Path("fixture.mp4"), mt(0), mt(1), "track", sample_interval=.5)
+        self.assertEqual(len(track.points), 3)
+        self.assertEqual(track.points[0].at.time_base, mt(0).time_base)
+
     def test_proxy_coordinate_mapping_is_deterministic(self) -> None:
         mapper = CoordinateMapper(1920, 1080, 640, 360)
         self.assertEqual(mapper.proxy_to_source(320, 90), (960.0, 270.0))
@@ -33,4 +55,3 @@ class VisionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

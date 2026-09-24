@@ -17,12 +17,15 @@ class MediaCommandTests(unittest.TestCase):
 
     def test_audio_command_is_argument_array_and_preserves_source(self) -> None:
         service = FFmpegService()
-        with tempfile.TemporaryDirectory() as directory, patch.object(FFmpegService, "_run") as run:
-            service.extract_speech_audio(Path("source.mp4"), Path(directory) / "audio.wav")
+        with tempfile.TemporaryDirectory() as directory, patch.object(FFmpegService, "_run_cancellable") as run:
+            output = Path(directory) / "audio.wav"
+            run.side_effect = lambda args, event: output.with_name("audio.partial.wav").write_bytes(b"fixture")
+            service.extract_speech_audio(Path("source.mp4"), output)
             args = run.call_args.args[0]
             self.assertIn(Path(args[0]).name.lower(), {"ffmpeg", "ffmpeg.exe"})
             self.assertIn("pcm_s16le", args)
             self.assertEqual(args[args.index("-i") + 1], "source.mp4")
+            self.assertTrue(output.exists())
 
     def test_project_local_static_ffmpeg_is_discovered_when_installed(self) -> None:
         try:

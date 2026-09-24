@@ -151,15 +151,47 @@ p { color: var(--muted); line-height: 1.55; }
 .error-banner button { border: 0; color: var(--muted); background: transparent; cursor: pointer; font-size: 20px; }
 .error-banner details { margin-top: 6px; color: var(--muted); font-size: 12px; }
 .error-banner pre { max-width: 680px; overflow: auto; white-space: pre-wrap; }
+.video-preview { display: block; width: 100%; max-height: 420px; border: 1px solid var(--border); border-radius: 9px; background: #05070a; }
+.video-preview--vertical { width: min(250px, 100%); max-height: 445px; margin: 0 auto; aspect-ratio: 9 / 16; object-fit: contain; }
+.transcript-layout, .clips-layout { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(300px, .55fr); gap: 16px; align-items: start; }
+.transcript-layout .panel, .clips-layout .panel { margin: 0; }
+.transcript-list { max-height: 600px; overflow: auto; content-visibility: auto; }
+.transcript-segment { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 13px; padding: 13px 0; border-top: 1px solid var(--border); }
+.transcript-segment:first-child { border-top: 0; }
+.transcript-segment small { display: block; margin: 5px 0; color: var(--muted); }
+.transcript-text { margin: 0; color: var(--text); white-space: pre-wrap; }
+.timecode { align-self: start; padding: 4px 6px; border: 0; border-radius: 5px; color: var(--primary-strong); background: var(--surface-2); cursor: pointer; font: 11px ui-monospace, monospace; }
+.correction-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 7px; }
+.correction-row textarea { min-height: 76px; resize: vertical; }
+.candidate-list, .clip-list, .output-list { display: grid; gap: 9px; }
+.candidate-card, .clip-card, .output-list article { padding: 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); }
+.candidate-card > div:first-child, .clip-card__title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.candidate-card > div:first-child div, .clip-card__title > div, .output-list article > div { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.candidate-card span, .clip-card span, .output-list span { overflow-wrap: anywhere; color: var(--muted); font-size: 11px; }
+.candidate-card p { margin: 10px 0; font-size: 12px; }
+.candidate-card__meta, .clip-card__actions, .editor-actions, .button-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.candidate-card__meta .button { margin-left: auto; }
+.clip-card__actions { margin-top: 12px; }
+.clip-card__actions label, .check-row { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+.clip-editor-form { display: grid; gap: 15px; margin-top: 18px; }
+.timing-grid { display: grid; grid-template-columns: 1fr 1fr auto; align-items: end; gap: 10px; }
+.timing-grid > div { display: grid; gap: 9px; padding-bottom: 9px; }
+.range-grid { display: grid; gap: 10px; padding: 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); }
+.range-grid label { display: grid; grid-template-columns: 90px minmax(0, 1fr); align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
+.exports-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.exports-grid .panel { margin: 0; }
+.outputs-panel { grid-column: 1 / -1; }
+.output-list article p { margin: 9px 0 0; color: var(--warning); font-size: 12px; }
 
 @media (max-width: 1050px) {
   .app-shell { grid-template-columns: 190px minmax(0, 1fr); }
   .page, .page--home { width: calc(100vw - 190px); padding-inline: 28px; }
   .workspace-grid { grid-template-columns: 1fr; }
   .source-panel, .jobs-panel, .workspace-grid > .panel:nth-child(2) { grid-column: 1; grid-row: auto; }
+  .transcript-layout, .clips-layout, .exports-grid { grid-template-columns: 1fr; }
+  .outputs-panel { grid-column: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
-

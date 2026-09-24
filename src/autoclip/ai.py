@@ -52,7 +52,7 @@ def validate_candidate_payload(payload: Any) -> list[dict[str, Any]]:
 class GeminiProvider(AIProvider):
     """Gemini REST adapter. Only bounded transcript chunks and explicit metadata are sent."""
 
-    def __init__(self, model: str = "gemini-2.5-flash", api_key: str | None = None) -> None:
+    def __init__(self, model: str = "gemini-3.6-flash", api_key: str | None = None) -> None:
         self.model = model
         self._api_key = api_key or os.environ.get("GEMINI_API_KEY")
 
@@ -93,6 +93,14 @@ class GeminiProvider(AIProvider):
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 raw = json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            message = "request rejected"
+            try:
+                error_payload = json.loads(exc.read())
+                message = str(error_payload.get("error", {}).get("message") or message)
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+            raise RuntimeError(f"Gemini request rejected ({exc.code}): {message}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError("Gemini request failed") from exc
         try:
@@ -123,4 +131,3 @@ class FixtureProvider(AIProvider):
 
     def rank_candidates(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return GeminiProvider(api_key="fixture").rank_candidates(candidates)
-

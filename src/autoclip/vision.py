@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Iterable, Protocol
 
@@ -30,12 +31,15 @@ class OpenCVFaceDetector:
             raise RuntimeError("OpenCV is not installed") from exc
         self._cv2 = cv2
         path = cascade_path or str(Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml")
-        self._cascade = cv2.CascadeClassifier(path)
-        if self._cascade.empty():
-            raise RuntimeError("OpenCV face cascade could not be loaded")
+        self._cascade = cv2.CascadeClassifier(path) if Path(path).is_file() else None
+        if self._cascade is not None and self._cascade.empty():
+            self._cascade = None
 
     def detect(self, frames: Iterable[tuple[MediaTime, object]]) -> Iterable[Detection | None]:
         for at, frame in frames:
+            if self._cascade is None:
+                yield None
+                continue
             height, width = frame.shape[:2]
             gray = self._cv2.cvtColor(frame, self._cv2.COLOR_BGR2GRAY)
             faces = self._cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
@@ -112,3 +116,42 @@ def crop_geometry(source_width: int, source_height: int, center_x: float, center
     x = round(center_x * source_width - crop_width / 2)
     y = round(center_y * source_height - crop_height / 2)
     return max(0, min(x, source_width - crop_width)), max(0, min(y, source_height - crop_height)), crop_width, crop_height
+
+
+def analyze_video_clip(
+    source: Path,
+    start: MediaTime,
+    end: MediaTime,
+    track_id: str,
+    *,
+    sample_interval: float = 0.5,
+    manual_override: ManualCropOverride | None = None,
+) -> ReframeTrack:
+    if end.seconds <= start.seconds:
+        raise ValueError("invalid clip range")
+    if manual_override and manual_override.enabled:
+        return build_reframe_track(track_id, [start, end], [None, None], manual_override=manual_override)
+    detector = OpenCVFaceDetector()
+    cv2 = detector._cv2
+    capture = cv2.VideoCapture(str(source))
+    if not capture.isOpened():
+        raise RuntimeError("The source video could not be opened for framing analysis.")
+    timestamps: list[MediaTime] = []
+    frames: list[tuple[MediaTime, object]] = []
+    current = float(start.seconds)
+    stop = float(end.seconds)
+    try:
+        while current <= stop:
+            capture.set(cv2.CAP_PROP_POS_MSEC, current * 1000)
+            ok, frame = capture.read()
+            if not ok:
+                break
+            at = MediaTime.from_seconds(Fraction(str(current)), start.time_base, exact=False)
+            timestamps.append(at)
+            frames.append((at, frame))
+            current += sample_interval
+    finally:
+        capture.release()
+    if not timestamps:
+        raise RuntimeError("No frames were available in the selected clip range.")
+    return build_reframe_track(track_id, timestamps, list(detector.detect(frames)))

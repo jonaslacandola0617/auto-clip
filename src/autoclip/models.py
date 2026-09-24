@@ -129,6 +129,35 @@ class CaptionTrack:
 
 
 @dataclass(slots=True)
+class ProjectClip:
+    id: str
+    source_id: str
+    source_in: MediaTime
+    source_out: MediaTime
+    title: str
+    source: str = "manual"
+    candidate_id: str | None = None
+    selected: bool = False
+    framing_mode: str = "auto"
+    manual_crop: ManualCropOverride = field(default_factory=ManualCropOverride)
+    captions_enabled: bool = True
+    caption_preset: str = "clean"
+    reframe_track_id: str | None = None
+    caption_track_id: str | None = None
+    render_path: str | None = None
+    revision: int = 1
+
+
+@dataclass(slots=True)
+class OutputArtifact:
+    id: str
+    kind: str
+    path: str
+    clip_id: str | None = None
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class Marker:
     at: MediaTime
     label: str
@@ -165,6 +194,8 @@ class AutoClipProject:
     timelines: list[Timeline] = field(default_factory=list)
     reframe_tracks: list[ReframeTrack] = field(default_factory=list)
     caption_tracks: list[CaptionTrack] = field(default_factory=list)
+    clips: list[ProjectClip] = field(default_factory=list)
+    outputs: list[OutputArtifact] = field(default_factory=list)
     schema_version: str = SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -201,9 +232,13 @@ class AutoClipProject:
         captions = [CaptionTrack(
             id=c["id"], cues=[CaptionCue(**{**q, "start": _mt(q["start"]), "end": _mt(q["end"])}) for q in c["cues"]],
         ) for c in data.get("caption_tracks", [])]
+        clips = [ProjectClip(**{
+            **c, "source_in": _mt(c["source_in"]), "source_out": _mt(c["source_out"]),
+            "manual_crop": ManualCropOverride(**c.get("manual_crop", {})),
+        }) for c in data.get("clips", [])]
+        outputs = [OutputArtifact(**o) for o in data.get("outputs", [])]
         return cls(
             id=data["id"], name=data["name"], sources=sources, transcripts=transcripts,
             candidates=candidates, timelines=timelines, reframe_tracks=reframes,
-            caption_tracks=captions, schema_version=data["schema_version"],
+            caption_tracks=captions, clips=clips, outputs=outputs, schema_version=data["schema_version"],
         )
-

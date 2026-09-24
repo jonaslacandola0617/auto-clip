@@ -42,6 +42,10 @@ export type ProjectState = {
   candidates: ClipCandidate[];
   clips: ProjectClip[];
   outputs: OutputArtifact[];
+  moment_count: number;
+  story_concepts: StoryConcept[];
+  edit_sequences: EditSequence[];
+  analysis_revision: string | null;
 };
 
 export type TranscriptSegment = {
@@ -89,7 +93,13 @@ export type ProjectClip = {
   revision: number;
 };
 
-export type OutputArtifact = { id: string; kind: string; path: string; clip_id: string | null; warnings: string[] };
+export type OutputArtifact = { id: string; kind: string; path: string; clip_id: string | null; edit_sequence_id: string | null; warnings: string[] };
+
+export type StoryConcept = { id: string; title: string; premise: string; hook: string; context: string; development: string; payoff: string; moment_ids: string[]; target_duration_seconds: number; explanation: string; coherence: Record<string, unknown>; integrity_considerations: string[]; status: string };
+export type EditorialAction = { id: string; type: string; timeline_start: number; timeline_end: number; parameters: Record<string, unknown>; reason: string; enabled: boolean; revision: number };
+export type EditSegment = { id: string; moment_id: string; source_id: string; source_in: number; source_out: number; timeline_start: number; duration_seconds: number; purpose: string; transcript_excerpt: string; order: number; actions: EditorialAction[] };
+export type EditorialIntegrity = { status: "passed" | "review_required" | "failed"; checks: Array<Record<string, unknown>>; evidence_references: string[]; warnings: string[]; required_review: boolean; validator_version: string };
+export type EditSequence = { id: string; story_concept_id: string; title: string; duration_seconds: number; segment_count: number; integrity: EditorialIntegrity; status: string; revision: number; preview_path: string | null; render_path: string | null; segments: EditSegment[] };
 
 export type RecentProject = { path: string; name: string; last_opened: string; available: boolean };
 

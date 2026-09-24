@@ -26,6 +26,7 @@ COMMANDS = {
     "update_clip",
     "delete_clip",
     "select_clip",
+    "update_edit_sequence",
 }
 
 

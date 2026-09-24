@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .time import MediaTime
-from .models import MediaSource, StreamInfo
+from .models import EditSequence, MediaSource, StreamInfo
 from .time import Rational, assess_frame_rate
 
 
@@ -183,3 +183,29 @@ class FFmpegService:
             "-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast",
             "-c:a", "aac", "-movflags", "+faststart", str(output),
         ])
+
+    def plan_edit_sequence_render(self, source: Path, sequence: EditSequence, output: Path, *, width: int = 1080, height: int = 1920, captions: Path | None = None) -> list[str]:
+        if len(sequence.segments) < 2:
+            raise ValueError("a Smart Edit render requires at least two segments")
+        arguments = [self.ffmpeg, "-y"]
+        for segment in sequence.segments:
+            arguments.extend(["-ss", f"{float(segment.source_in.seconds):.9f}", "-to", f"{float(segment.source_out.seconds):.9f}", "-i", str(source)])
+        chains: list[str] = []
+        concat_inputs = ""
+        for index, _segment in enumerate(sequence.segments):
+            chains.append(f"[{index}:v]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,setpts=PTS-STARTPTS[v{index}]")
+            chains.append(f"[{index}:a]aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS[a{index}]")
+            concat_inputs += f"[v{index}][a{index}]"
+        chains.append(f"{concat_inputs}concat=n={len(sequence.segments)}:v=1:a=1[vcat][acat]")
+        if captions:
+            escaped = str(captions.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
+            chains.append(f"[vcat]ass='{escaped}'[vout]")
+            video_map = "[vout]"
+        else:
+            video_map = "[vcat]"
+        arguments.extend(["-filter_complex", ";".join(chains), "-map", video_map, "-map", "[acat]", "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-movflags", "+faststart", str(output)])
+        return arguments
+
+    def render_edit_sequence(self, source: Path, sequence: EditSequence, output: Path, *, width: int = 1080, height: int = 1920, captions: Path | None = None, cancel_event: threading.Event | None = None) -> None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        self._run_cancellable(self.plan_edit_sequence_render(source, sequence, output, width=width, height=height, captions=captions), cancel_event)

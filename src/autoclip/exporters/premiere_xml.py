@@ -35,8 +35,8 @@ def build_premiere_xml(timeline: Timeline, sources: dict[str, MediaSource]) -> t
     warnings: list[str] = []
     for index, clip in enumerate(timeline.clips, 1):
         source = sources[clip.source_id]
-        source_in = clip.source_in.to_frames(timeline.frame_rate)
-        source_out = clip.source_out.to_frames(timeline.frame_rate)
+        source_in = clip.source_in.to_frames(timeline.frame_rate, exact=False)
+        source_out = clip.source_out.to_frames(timeline.frame_rate, exact=False)
         duration = source_out - source_in
         file_id = f"file-{source.id}"
         for track, media_type in ((video_track, "video"), (audio_track, "audio")):
@@ -66,4 +66,3 @@ def export_premiere_xml(timeline: Timeline, sources: dict[str, MediaSource], out
     ET.indent(tree, space="  ")
     tree.write(output, encoding="utf-8", xml_declaration=True)
     return warnings
-

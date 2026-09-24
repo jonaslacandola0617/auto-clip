@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ClipCandidate, ProjectClip } from "../types";
+import type { ClipCandidate, EditSequence, Job, ProjectClip, StoryConcept } from "../types";
 import { Button, EmptyState, Input, Panel, Select, Status } from "./Ui";
 import { VideoPreview } from "./VideoPreview";
 
@@ -11,21 +11,31 @@ function clock(seconds: number) {
   return `${minutes}:${Math.floor(seconds % 60).toString().padStart(2, "0")}`;
 }
 
-export function ClipsView({ candidates, clips, sourcePath, geminiReady, busy, onCommand, onStartJob }: {
+export function ClipsView({ candidates, clips, storyConcepts, editSequences, sourcePath, geminiReady, busy, analysisJob, smartEditJob, onCommand, onStartJob }: {
   candidates: ClipCandidate[];
   clips: ProjectClip[];
+  storyConcepts: StoryConcept[];
+  editSequences: EditSequence[];
   sourcePath: string;
   geminiReady: boolean;
   busy: boolean;
+  analysisJob: Job | null;
+  smartEditJob: Job | null;
   onCommand: CommandHandler;
   onStartJob: JobHandler;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [mode, setMode] = useState<"highlights" | "smart">("highlights");
+  const [editingSequenceId, setEditingSequenceId] = useState<string | null>(null);
   const editing = clips.find((clip) => clip.id === editingId) ?? null;
+  const editingSequence = editSequences.find((sequence) => sequence.id === editingSequenceId) ?? null;
   return <div className="clips-layout">
     <div>
+      <div className="button-row" role="group" aria-label="Generation mode"><Button aria-pressed={mode === "highlights"} variant={mode === "highlights" ? "primary" : "secondary"} onClick={() => setMode("highlights")}>Highlight Clips</Button><Button aria-pressed={mode === "smart"} variant={mode === "smart" ? "primary" : "secondary"} onClick={() => setMode("smart")}>Smart Edits</Button></div>
+      {mode === "highlights" ? <>
       <Panel title="AI candidates" action={<Button variant="primary" disabled={!geminiReady || busy} onClick={() => onStartJob("analyze")}>{busy ? "Analyzing…" : "Analyze clips"}</Button>}>
         {!geminiReady ? <div className="notice notice--warning"><span>Gemini isn't configured yet. Manual clip creation remains available in Transcript.</span></div> : null}
+        <AnalysisOutcome job={analysisJob} count={candidates.length} noun="clips" />
         {candidates.length ? <div className="candidate-list">{candidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} onCreate={() => onCommand("create_clip_from_candidate", { candidate_id: candidate.id })} />)}</div> : <EmptyState title="No AI candidates yet" description="Analyze the transcript with Gemini, or create clips manually from transcript segments." />}
       </Panel>
       <Panel title="Project clips">
@@ -34,9 +44,47 @@ export function ClipsView({ candidates, clips, sourcePath, geminiReady, busy, on
           <div className="clip-card__actions"><label><input type="checkbox" checked={clip.selected} onChange={(event) => onCommand("select_clip", { clip_id: clip.id, selected: event.target.checked })} /> Select</label><Button onClick={() => setEditingId(clip.id)}>Preview</Button><Button onClick={() => setEditingId(clip.id)}>Edit</Button><Button variant="quiet" onClick={() => setEditingId(clip.id)}>Rename</Button><Button variant="danger" onClick={() => onCommand("delete_clip", { clip_id: clip.id })}>Delete</Button></div>
         </article>)}</div> : <EmptyState title="No clips yet" description="Create a manual clip in Transcript or accept an AI candidate." />}
       </Panel>
+      </> : <Panel title="Smart Edits" action={<Button variant="primary" disabled={!geminiReady || busy} onClick={() => onStartJob("smart_edit")}>{busy ? "Building…" : "Find Smart Edits"}</Button>}>
+        <AnalysisOutcome job={smartEditJob} count={editSequences.length} noun="Smart Edits" />
+        {editSequences.length ? <div className="candidate-list">{editSequences.map((sequence) => <SmartEditCard key={sequence.id} sequence={sequence} story={storyConcepts.find((item) => item.id === sequence.story_concept_id)} onOpen={() => setEditingSequenceId(sequence.id)} />)}</div> : <EmptyState title="No Smart Edits yet" description="Find related moments across the transcript, or continue using Highlight Clips." />}
+      </Panel>}
     </div>
-    {editing ? <ClipEditor key={`${editing.id}-${editing.revision}`} clip={editing} sourcePath={sourcePath} onClose={() => setEditingId(null)} onCommand={onCommand} onStartJob={onStartJob} /> : <Panel title="Clip editor"><EmptyState title="Choose a clip" description="Preview, trim, frame, caption, and render a project clip." /></Panel>}
+    {mode === "smart" ? (editingSequence ? <SmartEditEditor sequence={editingSequence} sourcePath={sourcePath} onClose={() => setEditingSequenceId(null)} onCommand={onCommand} onStartJob={onStartJob} /> : <Panel title="Smart Edit review"><EmptyState title="Choose a Smart Edit" description="Review its ordered source segments, integrity findings, and removable editorial actions." /></Panel>) : (editing ? <ClipEditor key={`${editing.id}-${editing.revision}`} clip={editing} sourcePath={sourcePath} onClose={() => setEditingId(null)} onCommand={onCommand} onStartJob={onStartJob} /> : <Panel title="Clip editor"><EmptyState title="Choose a clip" description="Preview, trim, frame, caption, and render a project clip." /></Panel>)}
   </div>;
+}
+
+function AnalysisOutcome({ job, count, noun }: { job: Job | null; count: number; noun: string }) {
+  if (!job) return null;
+  if (job.state === "queued" || job.state === "running") return <div className="notice"><strong>{job.current_stage}</strong><span>{Math.round(job.progress * 100)}% complete</span></div>;
+  if (job.state === "failed") return <div className="notice notice--warning"><strong>We couldn't analyze this transcript.</strong><span>{job.error?.message ?? "Try again or create a clip manually."}</span></div>;
+  if (job.state === "completed" && count === 0) return <div className="notice notice--warning"><strong>No suitable {noun} were found.</strong><span>Try again, create a clip manually, or use the other generation mode.</span></div>;
+  if (job.state === "completed") {
+    const displayNoun = count === 1 && noun.endsWith("s") ? noun.slice(0, -1) : noun;
+    return <div className="notice"><strong>{count} {displayNoun} found.</strong></div>;
+  }
+  return null;
+}
+
+function SmartEditCard({ sequence, story, onOpen }: { sequence: EditSequence; story?: StoryConcept; onOpen: () => void }) {
+  return <article className="candidate-card"><div><strong>{sequence.title}</strong><span>{sequence.duration_seconds.toFixed(1)}s · {sequence.segment_count} segments</span></div><p>{story?.explanation ?? "Source-grounded multi-segment edit"}</p><div className="candidate-card__meta"><span>{sequence.integrity.status.replace("_", " ")}</span><span>{sequence.segments.map((item) => `${clock(item.source_in)}–${clock(item.source_out)}`).join(" · ")}</span><Button onClick={onOpen}>Review</Button></div></article>;
+}
+
+function SmartEditEditor({ sequence, sourcePath, onClose, onCommand, onStartJob }: { sequence: EditSequence; sourcePath: string; onClose: () => void; onCommand: CommandHandler; onStartJob: JobHandler }) {
+  const [title, setTitle] = useState(sequence.title);
+  const ids = sequence.segments.map((item) => item.id);
+  return <Panel title="Smart Edit review" action={<Button variant="quiet" onClick={onClose}>Close</Button>}>
+    {sequence.preview_path ? <VideoPreview path={sequence.preview_path} vertical /> : <VideoPreview path={sourcePath} start={sequence.segments[0]?.source_in} end={sequence.segments[0]?.source_out} />}
+    <label className="field"><span className="field__label">Name</span><Input value={title} onChange={(event) => setTitle(event.target.value)} /></label><Button onClick={() => onCommand("update_edit_sequence", { edit_sequence_id: sequence.id, operation: "rename", title })}>Save name</Button>
+    <p className="muted">Integrity: {sequence.integrity.status.replace("_", " ")}{sequence.integrity.warnings.length ? ` · ${sequence.integrity.warnings.join(" ")}` : ""}</p>
+    <div className="candidate-list">{sequence.segments.map((segment, index) => <SmartEditSegmentCard key={segment.id} sequenceId={sequence.id} segment={segment} index={index} segmentIds={ids} onCommand={onCommand} />)}</div>
+    <div className="editor-actions"><Button disabled={sequence.integrity.status === "failed" || sequence.segment_count < 2} onClick={() => onStartJob("smart_preview", { edit_sequence_id: sequence.id })}>Generate preview</Button><Button disabled={sequence.integrity.status === "failed" || sequence.segment_count < 2} onClick={() => onStartJob("smart_render", { edit_sequence_id: sequence.id })}>Render MP4</Button><Button onClick={() => onStartJob("export", { format: "otio", edit_sequence_id: sequence.id })}>Export OTIO</Button><Button onClick={() => onStartJob("export", { format: "premiere_xml", edit_sequence_id: sequence.id })}>Export XML</Button></div>
+  </Panel>;
+}
+
+function SmartEditSegmentCard({ sequenceId, segment, index, segmentIds, onCommand }: { sequenceId: string; segment: EditSequence["segments"][number]; index: number; segmentIds: string[]; onCommand: CommandHandler }) {
+  const [sourceIn, setSourceIn] = useState(String(segment.source_in));
+  const [sourceOut, setSourceOut] = useState(String(segment.source_out));
+  return <article className="clip-card"><div className="clip-card__title"><div><strong>{segment.purpose}</strong><span>{clock(segment.source_in)}–{clock(segment.source_out)} · {segment.duration_seconds.toFixed(1)}s</span></div><Status ready>{index + 1}</Status></div><p>{segment.transcript_excerpt}</p><div className="timing-grid"><label className="field"><span className="field__label">Source in</span><Input type="number" step="0.01" value={sourceIn} onChange={(event) => setSourceIn(event.target.value)} /></label><label className="field"><span className="field__label">Source out</span><Input type="number" step="0.01" value={sourceOut} onChange={(event) => setSourceOut(event.target.value)} /></label><Button disabled={Number(sourceOut) <= Number(sourceIn)} onClick={() => onCommand("update_edit_sequence", { edit_sequence_id: sequenceId, operation: "trim", segment_id: segment.id, source_in: Number(sourceIn), source_out: Number(sourceOut) })}>Save trim</Button></div><div className="clip-card__actions"><Button disabled={index === 0} onClick={() => { const next = [...segmentIds]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; void onCommand("update_edit_sequence", { edit_sequence_id: sequenceId, operation: "reorder", segment_ids: next }); }}>Move up</Button><Button variant="danger" onClick={() => onCommand("update_edit_sequence", { edit_sequence_id: sequenceId, operation: "remove_segment", segment_id: segment.id })}>Remove</Button>{segment.actions.map((action) => <label key={action.id}><input type="checkbox" checked={action.enabled} onChange={(event) => onCommand("update_edit_sequence", { edit_sequence_id: sequenceId, operation: "toggle_action", action_id: action.id, enabled: event.target.checked })} /> {action.type.replace("_", " ")}</label>)}</div></article>;
 }
 
 function CandidateCard({ candidate, onCreate }: { candidate: ClipCandidate; onCreate: () => void }) {

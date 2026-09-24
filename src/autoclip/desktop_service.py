@@ -14,16 +14,17 @@ from pathlib import Path
 from typing import Any
 
 from .ai import GeminiProvider
-from .captions import CAPTION_PRESETS, build_caption_track, export_ass, export_srt
+from .captions import CAPTION_PRESETS, build_caption_track, build_edit_sequence_caption_track, export_ass, export_edit_sequence_ass, export_srt
 from .desktop_protocol import ProtocolError
 from .exporters.otio import export_otio
 from .exporters.premiere_xml import export_premiere_xml
 from .jobs import JobManager
 from .media import FFmpegService, media_source_from_probe
 from .models import (
-    ApprovedClip, AutoClipProject, ManualCropOverride, MediaSource, OutputArtifact,
+    ApprovedClip, AutoClipProject, EditSequence, ManualCropOverride, MediaSource, OutputArtifact,
     ProjectClip, Timeline,
 )
+from .intelligent_edit import construct_story_concepts_locally, moments_from_candidates, plan_sequence, reflow_sequence, validate_integrity
 from .pipeline import CorePipeline
 from .storage import Workspace, atomic_write_json, load_project, save_project
 from .time import MediaTime
@@ -92,6 +93,7 @@ class DesktopService:
             "update_clip": self.update_clip,
             "delete_clip": self.delete_clip,
             "select_clip": self.select_clip,
+            "update_edit_sequence": self.update_edit_sequence,
         }
         return handlers[command](payload)
 
@@ -239,6 +241,21 @@ class DesktopService:
             "render_path": clip.render_path, "revision": clip.revision,
         }
 
+    def _edit_sequence_summary(self, sequence: EditSequence) -> dict[str, Any]:
+        return {
+            "id": sequence.id, "story_concept_id": sequence.story_concept_id, "title": sequence.title,
+            "duration_seconds": sequence.duration_seconds, "segment_count": len(sequence.segments),
+            "integrity": asdict(sequence.integrity), "status": sequence.status, "revision": sequence.revision,
+            "preview_path": sequence.preview_path, "render_path": sequence.render_path,
+            "segments": [{
+                "id": segment.id, "moment_id": segment.moment_id, "source_id": segment.source_id,
+                "source_in": float(segment.source_in.seconds), "source_out": float(segment.source_out.seconds),
+                "timeline_start": segment.timeline_start, "duration_seconds": float(segment.source_out.seconds - segment.source_in.seconds),
+                "purpose": segment.purpose, "transcript_excerpt": segment.transcript_excerpt, "order": segment.order,
+                "actions": [asdict(action) for action in sequence.actions if action.id in segment.action_ids or action.timeline_start >= segment.timeline_start and action.timeline_start < segment.timeline_start + float(segment.source_out.seconds - segment.source_in.seconds)],
+            } for segment in sequence.segments],
+        }
+
     def _state(self, workspace: Workspace, project: AutoClipProject) -> dict[str, Any]:
         source = self._source_summary(project.sources[0], workspace) if project.sources else None
         if source is None:
@@ -259,6 +276,10 @@ class DesktopService:
             "candidates": [self._candidate_summary(candidate) for candidate in project.candidates],
             "clips": [self._clip_summary(workspace, project, clip) for clip in project.clips],
             "outputs": [asdict(output) for output in project.outputs],
+            "moment_count": len(project.moments),
+            "story_concepts": [asdict(story) for story in project.story_concepts],
+            "edit_sequences": [self._edit_sequence_summary(sequence) for sequence in project.edit_sequences],
+            "analysis_revision": project.analysis_revision,
         }
 
     def inspect_media(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -282,6 +303,10 @@ class DesktopService:
             project.reframe_tracks.clear()
             project.caption_tracks.clear()
             project.outputs.clear()
+            project.moments.clear()
+            project.story_concepts.clear()
+            project.edit_sequences.clear()
+            project.analysis_revision = None
         save_project(workspace, project)
         return self._state(workspace, project)
 
@@ -302,6 +327,10 @@ class DesktopService:
         })
         removed_ai_ids = {clip.id for clip in project.clips if clip.source == "ai"}
         project.candidates.clear()
+        project.moments.clear()
+        project.story_concepts.clear()
+        project.edit_sequences.clear()
+        project.analysis_revision = None
         project.clips = [clip for clip in project.clips if clip.source != "ai"]
         project.caption_tracks.clear()
         affected_clip_ids = set(removed_ai_ids)
@@ -448,6 +477,49 @@ class DesktopService:
         save_project(workspace, project)
         return self._state(workspace, project)
 
+    def update_edit_sequence(self, payload: dict[str, Any]) -> dict[str, Any]:
+        workspace, project = self._load_project(str(payload.get("project_path", "")))
+        sequence = next((item for item in project.edit_sequences if item.id == str(payload.get("edit_sequence_id", ""))), None)
+        if sequence is None or not project.transcripts:
+            raise ProtocolError("edit_sequence_not_found", "We couldn't find that Smart Edit.")
+        operation = str(payload.get("operation", ""))
+        if operation == "rename":
+            title = str(payload.get("title", "")).strip()
+            if not title:
+                raise ProtocolError("invalid_title", "Enter a Smart Edit name.")
+            sequence.title = title
+        elif operation == "remove_segment":
+            sequence.segments = [item for item in sequence.segments if item.id != str(payload.get("segment_id", ""))]
+        elif operation == "reorder":
+            order = [str(item) for item in payload.get("segment_ids", [])]
+            if set(order) != {item.id for item in sequence.segments} or len(order) != len(sequence.segments):
+                raise ProtocolError("invalid_segment_order", "Keep every Smart Edit segment exactly once when reordering.")
+            by_id = {item.id: item for item in sequence.segments}
+            sequence.segments = [by_id[item] for item in order]
+        elif operation == "trim":
+            segment = next((item for item in sequence.segments if item.id == str(payload.get("segment_id", ""))), None)
+            moment = next((item for item in project.moments if segment and item.id == segment.moment_id), None)
+            if segment is None or moment is None or not project.sources:
+                raise ProtocolError("edit_segment_not_found", "We couldn't find that Smart Edit segment.")
+            start = self._clip_time(project.sources[0], payload.get("source_in"))
+            end = self._clip_time(project.sources[0], payload.get("source_out"))
+            if start.seconds < moment.source_in.seconds or end.seconds > moment.source_out.seconds or end.seconds <= start.seconds:
+                raise ProtocolError("invalid_segment_bounds", "Keep the trim inside its source-grounded Moment.")
+            segment.source_in, segment.source_out = start, end
+        elif operation == "toggle_action":
+            action = next((item for item in sequence.actions if item.id == str(payload.get("action_id", ""))), None)
+            if action is None:
+                raise ProtocolError("editorial_action_not_found", "We couldn't find that editorial action.")
+            action.enabled = bool(payload.get("enabled", True))
+            action.revision += 1
+        else:
+            raise ProtocolError("unsupported_edit_operation", "That Smart Edit change isn't supported.")
+        reflow_sequence(sequence)
+        sequence.integrity = validate_integrity(sequence, project.transcripts[-1], {item.id: item for item in project.moments})
+        sequence.status = "ready_to_preview" if len(sequence.segments) >= 2 and sequence.integrity.status == "passed" else "review_required"
+        save_project(workspace, project)
+        return self._state(workspace, project)
+
     def _read_recents(self) -> list[dict[str, Any]]:
         if not self.recents_path.exists():
             return []
@@ -513,21 +585,25 @@ class DesktopService:
             if not project_path:
                 raise ProtocolError("project_path_required", "Open a project before starting transcription.")
             runner = lambda _id, event, update: self._transcribe_job(project_path, event, update)
-        elif job_type in {"proxy", "analyze", "reframe", "preview", "render", "export"}:
+        elif job_type in {"proxy", "analyze", "smart_edit", "reframe", "preview", "render", "smart_preview", "smart_render", "export"}:
             if not project_path:
                 raise ProtocolError("project_path_required", "Open a project before starting this job.")
             if job_type == "proxy":
                 runner = lambda _id, event, update: self._proxy_job(project_path, event, update)
             elif job_type == "analyze":
                 runner = lambda _id, event, update: self._analyze_job(project_path, event, update)
+            elif job_type == "smart_edit":
+                runner = lambda _id, event, update: self._smart_edit_job(project_path, event, update)
             elif job_type == "reframe":
                 runner = lambda _id, event, update: self._reframe_job(project_path, str(payload.get("clip_id", "")), event, update)
             elif job_type == "preview":
                 runner = lambda _id, event, update: self._render_job(project_path, str(payload.get("clip_id", "")), True, event, update)
             elif job_type == "render":
                 runner = lambda _id, event, update: self._render_job(project_path, str(payload.get("clip_id", "")), False, event, update)
+            elif job_type in {"smart_preview", "smart_render"}:
+                runner = lambda _id, event, update: self._render_edit_sequence_job(project_path, str(payload.get("edit_sequence_id", "")), job_type == "smart_preview", event, update)
             else:
-                runner = lambda _id, event, update: self._export_job(project_path, str(payload.get("format", "")), str(payload.get("clip_id", "")) or None, event, update)
+                runner = lambda _id, event, update: self._export_job(project_path, str(payload.get("format", "")), str(payload.get("clip_id", "")) or None, event, update, str(payload.get("edit_sequence_id", "")) or None)
         else:
             raise ProtocolError("unsupported_job", "This processing job is not available yet.")
         return asdict(self.jobs.start(job_type, runner, project_path=project_path, cancellable=True))
@@ -577,15 +653,51 @@ class DesktopService:
         provider = GeminiProvider(model=settings["gemini_model"])
         if not provider.available:
             raise RuntimeError("Gemini isn't configured yet. Add GEMINI_API_KEY and try again.")
-        update(0.1, "Preparing transcript chunks", True)
+        transcript = project.transcripts[-1]
+        update(0.1, "Analyzing transcript", True)
         if event.is_set():
             return
         pipeline = CorePipeline(workspace, FFmpegService(), FasterWhisperTranscriber(settings["whisper_model"]), provider, prompt_version="phase1b-v1")
-        update(0.3, "Analyzing clips with Gemini", False)
-        candidates = pipeline.analyze_source(project.sources[0], project.transcripts[-1])
-        update(0.85, "Ranking and saving candidates", False)
+        update(0.3, "Analyzing transcript sections", False)
+        candidates = pipeline.analyze_source(project.sources[0], transcript)
+        update(0.85, "Ranking clips", False)
         project.candidates = candidates
+        project.analysis_revision = workspace.cache_key("highlight_analysis_revision", {"transcript_revision": transcript.revision_id, "prompt": pipeline.prompt_version, "provider": type(provider).__name__, "model": provider.model})
         save_project(workspace, project)
+        update(0.96, f"{len(candidates)} clips found" if candidates else "No suitable clips were found", False)
+
+    def _smart_edit_job(self, project_path: str, event: threading.Event, update: Any) -> None:
+        workspace, project = self._load_project(project_path)
+        if not project.sources or not project.transcripts:
+            raise RuntimeError("Transcribe the source before creating Smart Edits.")
+        settings = self.get_settings()
+        provider = GeminiProvider(model=settings["gemini_model"])
+        if not provider.available:
+            raise RuntimeError("Gemini isn't configured yet. Add GEMINI_API_KEY and try again.")
+        pipeline = CorePipeline(workspace, FFmpegService(), FasterWhisperTranscriber(settings["whisper_model"]), provider, prompt_version="phase2a-v1")
+        transcript, source = project.transcripts[-1], project.sources[0]
+        if project.candidates and project.analysis_revision:
+            update(0.08, "Reusing cached full-source analysis", True)
+            moments = moments_from_candidates(project.candidates, transcript, source)
+            stories = construct_story_concepts_locally(moments)
+        else:
+            update(0.08, "Discovering moments across the transcript", True)
+            moments = pipeline.discover_moments(source, transcript)
+            stories = []
+        if event.is_set():
+            return
+        update(0.5, f"Consolidating {len(moments)} moments", True)
+        if not stories and not (project.candidates and project.analysis_revision):
+            stories = pipeline.construct_story_concepts(moments, transcript)
+        if event.is_set():
+            return
+        update(0.72, "Planning source-grounded edit sequences", False)
+        moment_map = {item.id: item for item in moments}
+        sequences = [plan_sequence(story, moment_map, transcript, source) for story in stories]
+        project.moments, project.story_concepts, project.edit_sequences = moments, stories, sequences
+        project.analysis_revision = workspace.cache_key("smart_edit_revision", {"transcript_revision": transcript.revision_id, "moments": [item.id for item in moments], "stories": [item.id for item in stories], "prompt": "phase2a-v1", "model": provider.model})
+        save_project(workspace, project)
+        update(0.96, f"{len(sequences)} Smart Edits ready" if sequences else "No suitable Smart Edits were found", False)
 
     def _proxy_job(self, project_path: str, event: threading.Event, update: Any) -> None:
         workspace, project = self._load_project(project_path)
@@ -656,9 +768,9 @@ class DesktopService:
             index += 1
         return candidate
 
-    def _record_output(self, project: AutoClipProject, kind: str, path: Path, clip_id: str | None = None, warnings: list[str] | None = None) -> None:
+    def _record_output(self, project: AutoClipProject, kind: str, path: Path, clip_id: str | None = None, warnings: list[str] | None = None, edit_sequence_id: str | None = None) -> None:
         project.outputs.append(OutputArtifact(
-            id=f"output_{len(project.outputs) + 1}", kind=kind, path=str(path), clip_id=clip_id, warnings=warnings or [],
+            id=f"output_{len(project.outputs) + 1}", kind=kind, path=str(path), clip_id=clip_id, edit_sequence_id=edit_sequence_id, warnings=warnings or [],
         ))
 
     def _render_job(self, project_path: str, clip_id: str, preview: bool, event: threading.Event, update: Any) -> None:
@@ -694,6 +806,34 @@ class DesktopService:
             self._record_output(project, "mp4", output, clip.id)
             save_project(workspace, project)
 
+    def _render_edit_sequence_job(self, project_path: str, sequence_id: str, preview: bool, event: threading.Event, update: Any) -> None:
+        workspace, project = self._load_project(project_path)
+        sequence = next((item for item in project.edit_sequences if item.id == sequence_id), None)
+        if sequence is None or not project.sources or not project.transcripts:
+            raise RuntimeError("The selected Smart Edit is unavailable.")
+        if len(sequence.segments) < 2 or sequence.integrity.status == "failed":
+            raise RuntimeError("Review the Smart Edit integrity findings before rendering.")
+        update(0.1, "Mapping Smart Edit captions", True)
+        caption_track = build_edit_sequence_caption_track(sequence, project.transcripts[-1])
+        captions = workspace.root / "cache" / "previews" / f"{sequence.id}-r{sequence.revision}.ass"
+        export_edit_sequence_ass(caption_track, captions)
+        output_dir = workspace.root / ("cache/previews" if preview else "exports")
+        output = output_dir / f"{sequence.id}-r{sequence.revision}.mp4" if preview else self._available_output(output_dir, f"{sequence.title}-smart-edit", ".mp4")
+        if preview and output.exists():
+            sequence.preview_path = str(output)
+            update(0.95, "Using cached Smart Edit preview", True)
+            save_project(workspace, project)
+            return
+        update(0.25, "Rendering approved source segments", False)
+        FFmpegService().render_edit_sequence(Path(project.sources[0].reference), sequence, output, width=360 if preview else 1080, height=640 if preview else 1920, captions=captions, cancel_event=event)
+        if preview:
+            sequence.preview_path = str(output)
+        else:
+            sequence.render_path = str(output)
+            self._record_output(project, "smart_edit_mp4", output, edit_sequence_id=sequence.id)
+        save_project(workspace, project)
+        update(0.95, "Smart Edit preview ready" if preview else "Smart Edit rendered", False)
+
     def _timeline_for_clips(self, project: AutoClipProject) -> Timeline:
         clips = [clip for clip in project.clips if clip.selected] or project.clips
         if not clips or not project.sources:
@@ -708,7 +848,17 @@ class DesktopService:
             ) for clip in clips],
         )
 
-    def _export_job(self, project_path: str, export_format: str, clip_id: str | None, event: threading.Event, update: Any) -> None:
+    def _timeline_for_edit_sequence(self, project: AutoClipProject, sequence_id: str) -> Timeline:
+        sequence = next((item for item in project.edit_sequences if item.id == sequence_id), None)
+        if sequence is None:
+            raise RuntimeError("The selected Smart Edit is unavailable.")
+        return Timeline(
+            id=f"timeline_{sequence.id}_r{sequence.revision}", canvas_width=sequence.canvas_width,
+            canvas_height=sequence.canvas_height, frame_rate=sequence.frame_rate,
+            clips=[ApprovedClip(segment.id, segment.source_id, segment.source_in, segment.source_out, f"{sequence.title} - {segment.purpose}") for segment in sequence.segments],
+        )
+
+    def _export_job(self, project_path: str, export_format: str, clip_id: str | None, event: threading.Event, update: Any, edit_sequence_id: str | None = None) -> None:
         if export_format not in {"srt", "ass", "otio", "premiere_xml", "project_json"}:
             raise RuntimeError("Choose a supported export format.")
         workspace, project = self._load_project(project_path)
@@ -725,7 +875,7 @@ class DesktopService:
             output = self._available_output(output_dir, clip.title, f".{export_format}")
             (export_srt if export_format == "srt" else export_ass)(track, clip, output)
         elif export_format in {"otio", "premiere_xml"}:
-            timeline = self._timeline_for_clips(project)
+            timeline = self._timeline_for_edit_sequence(project, edit_sequence_id) if edit_sequence_id else self._timeline_for_clips(project)
             output = self._available_output(output_dir, project.name, ".otio" if export_format == "otio" else ".xml")
             sources = {source.id: source for source in project.sources}
             warnings = (export_otio if export_format == "otio" else export_premiere_xml)(timeline, sources, output)
@@ -734,7 +884,7 @@ class DesktopService:
             output = self._available_output(output_dir, project.name, ".autoclip.json")
             shutil.copy2(workspace.project_file, output)
         update(0.85, "Saving export reference", False)
-        self._record_output(project, export_format, output, clip_id, warnings)
+        self._record_output(project, export_format, output, clip_id, warnings, edit_sequence_id)
         save_project(workspace, project)
 
     def cancel_job(self, payload: dict[str, Any]) -> dict[str, Any]:

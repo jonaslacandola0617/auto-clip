@@ -37,7 +37,7 @@ export function WorkspaceView({ project, doctor, jobs, onChooseSource, onStartJo
       </div> : null}
 
       {tab === "transcript" ? <TranscriptView transcript={project.transcript} busy={Boolean(activeJob)} onTranscribe={() => onStartJob("transcribe")} onCorrect={(segmentId, text) => onCommand("correct_transcript", { segment_id: segmentId, text })} onCreateClip={(startSegmentId, endSegmentId) => onCommand("create_manual_clip", { start_segment_id: startSegmentId, end_segment_id: endSegmentId })} /> : null}
-      {tab === "clips" ? (project.source ? <ClipsView candidates={project.candidates} clips={project.clips} sourcePath={project.source.preview_path ?? project.source.path} geminiReady={Boolean(doctor?.gemini.ready)} busy={Boolean(activeJob)} onCommand={onCommand} onStartJob={onStartJob} /> : <EmptyState title="Select a source video" description="A source is required before clips can be created." />) : null}
+      {tab === "clips" ? (project.source ? <ClipsView candidates={project.candidates} clips={project.clips} storyConcepts={project.story_concepts} editSequences={project.edit_sequences} sourcePath={project.source.preview_path ?? project.source.path} geminiReady={Boolean(doctor?.gemini.ready)} busy={Boolean(activeJob)} analysisJob={jobs.find((job) => job.type === "analyze") ?? null} smartEditJob={jobs.find((job) => job.type === "smart_edit") ?? null} onCommand={onCommand} onStartJob={onStartJob} /> : <EmptyState title="Select a source video" description="A source is required before clips can be created." />) : null}
       {tab === "exports" ? <ExportsView clips={project.clips} outputs={project.outputs} busy={Boolean(activeJob)} onStartJob={onStartJob} /> : null}
     </div>
   );

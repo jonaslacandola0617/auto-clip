@@ -28,6 +28,7 @@ export function App() {
 
   const refreshRecents = useCallback(async () => setRecents(await workerRequest<RecentProject[]>("list_recent_projects")), []);
   const refreshJobs = useCallback(async (projectPath: string) => setJobs(await workerRequest<Job[]>("list_jobs", { project_path: projectPath })), []);
+  const refreshProject = useCallback(async (projectPath: string) => setProject(await workerRequest<ProjectState>("get_project_state", { path: projectPath })), []);
 
   useEffect(() => {
     Promise.all([workerRequest<Doctor>("doctor"), workerRequest<Settings>("get_settings"), workerRequest<RecentProject[]>("list_recent_projects")])
@@ -41,13 +42,10 @@ export function App() {
   useEffect(() => {
     if (!projectPath || !hasActiveJob) return;
     const timer = window.setInterval(() => {
-      void refreshJobs(projectPath).then(async () => {
-        const current = await workerRequest<ProjectState>("get_project_state", { path: projectPath });
-        setProject(current);
-      }).catch(reportError);
+      void Promise.all([refreshJobs(projectPath), refreshProject(projectPath)]).catch(reportError);
     }, 900);
     return () => window.clearInterval(timer);
-  }, [hasActiveJob, projectPath, refreshJobs, reportError]);
+  }, [hasActiveJob, projectPath, refreshJobs, refreshProject, reportError]);
 
   async function openProject(path: string) {
     try {
@@ -83,8 +81,10 @@ export function App() {
   async function startProjectJob(type: string, payload: Record<string, unknown> = {}) {
     if (!project) return;
     try {
-      await workerRequest<Job>("start_job", { type, project_path: project.path, ...payload });
+      const started = await workerRequest<Job>("start_job", { type, project_path: project.path, ...payload });
+      setJobs((current) => [started, ...current.filter((job) => job.id !== started.id)]);
       await refreshJobs(project.path);
+      await refreshProject(project.path);
     } catch (reason) { reportError(reason); }
   }
 

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .models import CaptionCue, CaptionTrack, ProjectClip, Transcript
+from .models import CaptionCue, CaptionTrack, EditSequence, ProjectClip, Transcript
+from .time import MediaTime
+from .time import Rational
 
 
 CAPTION_PRESETS = {"clean", "bold_social", "word_highlight"}
@@ -35,6 +37,28 @@ def build_caption_track(clip: ProjectClip, transcript: Transcript) -> CaptionTra
                 word_ids=[word.id for word in group],
             ))
     return CaptionTrack(id=f"caption_{clip.id}_r{clip.revision}", cues=cues)
+
+
+def build_edit_sequence_caption_track(sequence: EditSequence, transcript: Transcript) -> CaptionTrack:
+    words_by_id = {word.id: word for word in transcript.words}
+    cues: list[CaptionCue] = []
+    for segment in sequence.segments:
+        offset = segment.timeline_start - float(segment.source_in.seconds)
+        words = [word for word in transcript.words if word.start.seconds < segment.source_out.seconds and word.end.seconds > segment.source_in.seconds]
+        for index in range(0, len(words), 6):
+            group = words[index:index + 6]
+            if not group:
+                continue
+            start = max(float(group[0].start.seconds), float(segment.source_in.seconds)) + offset
+            end = min(float(group[-1].end.seconds), float(segment.source_out.seconds)) + offset
+            timeline_time_base = Rational(sequence.frame_rate.denominator, sequence.frame_rate.numerator)
+            cues.append(CaptionCue(
+                start=MediaTime.from_seconds(start, timeline_time_base, exact=False),
+                end=MediaTime.from_seconds(end, timeline_time_base, exact=False),
+                text=" ".join(word.corrected_text or word.text for word in group),
+                word_ids=[word.id for word in group], edit_segment_id=segment.id,
+            ))
+    return CaptionTrack(id=f"caption_{sequence.id}_r{sequence.revision}", cues=cues)
 
 
 def _clock(seconds: float, *, ass: bool = False) -> str:
@@ -76,6 +100,22 @@ def serialize_ass(track: CaptionTrack, clip: ProjectClip, preset: str) -> str:
         text = (cue.editable_text_override or cue.text).replace("\n", r"\N").replace(",", r"\,")
         lines.append(f"Dialogue: 0,{_clock(float(cue.start.seconds) - offset, ass=True)},{_clock(float(cue.end.seconds) - offset, ass=True)},AutoClip,,0,0,0,,{text}")
     return "\n".join(lines) + "\n"
+
+
+def serialize_edit_sequence_ass(track: CaptionTrack, preset: str = "clean") -> str:
+    if preset not in CAPTION_PRESETS:
+        raise ValueError("unsupported caption preset")
+    styles = {"clean": "Arial,58,&H00FFFFFF,&H000000FF,&H00101010,0,0,0,0,100,100,0,0,1,3,1,2,80,80,90,1", "bold_social": "Arial,72,&H00FFFFFF,&H000000FF,&H00000000,-1,0,0,0,100,100,0,0,1,5,2,2,70,70,110,1", "word_highlight": "Arial,68,&H0000FFFF,&H000000FF,&H00000000,-1,0,0,0,100,100,0,0,1,4,2,2,70,70,110,1"}
+    lines = ["[Script Info]", "ScriptType: v4.00+", "PlayResX: 1080", "PlayResY: 1920", "WrapStyle: 2", "", "[V4+ Styles]", "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding", f"Style: AutoClip,{styles[preset]}", "", "[Events]", "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text"]
+    for cue in track.cues:
+        text = (cue.editable_text_override or cue.text).replace("\n", r"\N").replace(",", r"\,")
+        lines.append(f"Dialogue: 0,{_clock(float(cue.start.seconds), ass=True)},{_clock(float(cue.end.seconds), ass=True)},AutoClip,,0,0,0,,{text}")
+    return "\n".join(lines) + "\n"
+
+
+def export_edit_sequence_ass(track: CaptionTrack, output: Path, preset: str = "clean") -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(serialize_edit_sequence_ass(track, preset), encoding="utf-8")
 
 
 def export_srt(track: CaptionTrack, clip: ProjectClip, output: Path) -> None:

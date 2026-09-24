@@ -22,8 +22,8 @@ def build_otio(timeline: Timeline, sources: dict[str, MediaSource]) -> tuple[dic
     warnings: list[str] = []
     for clip in timeline.clips:
         source = sources[clip.source_id]
-        start = clip.source_in.to_frames(timeline.frame_rate)
-        end = clip.source_out.to_frames(timeline.frame_rate)
+        start = clip.source_in.to_frames(timeline.frame_rate, exact=False)
+        end = clip.source_out.to_frames(timeline.frame_rate, exact=False)
         source_range = _time_range(start, end - start, rate)
         reference = {
             "OTIO_SCHEMA": "ExternalReference.1", "name": source.id,

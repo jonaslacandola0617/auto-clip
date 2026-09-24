@@ -10,7 +10,8 @@ from typing import Any, Callable
 from .ai import AIProvider
 from .candidates import normalize_and_deduplicate, validate_candidate
 from .media import FFmpegService, MediaOperationCancelled, media_source_from_probe
-from .models import ClipCandidate, MediaSource, ScoreDimensions, Transcript, TranscriptSegment, TranscriptWord
+from .models import ClipCandidate, MediaSource, Moment, ScoreDimensions, StoryConcept, Transcript, TranscriptSegment, TranscriptWord
+from .intelligent_edit import consolidate_moments
 from .storage import Workspace, atomic_write_json
 from .time import MediaTime
 from .transcription import FasterWhisperTranscriber, TranscriptionCancelled
@@ -26,9 +27,12 @@ def chunk_transcript(transcript: Transcript, *, max_words: int = 800, overlap_wo
         group = words[start:start + max_words]
         if not group:
             break
+        word_ids = {word.id for word in group}
         chunks.append({
             "start": float(group[0].start.seconds), "end": float(group[-1].end.seconds),
             "text": " ".join(word.corrected_text or word.text for word in group),
+            "word_ids": [word.id for word in group],
+            "segment_ids": [segment.id for segment in transcript.segments if word_ids.intersection(segment.word_ids)],
         })
         if start + max_words >= len(words):
             break
@@ -68,6 +72,52 @@ class CorePipeline:
             validate_candidate(candidate, source.duration, transcript)
             candidates.append(candidate)
         return normalize_and_deduplicate(candidates)
+
+    def discover_moments(self, source: MediaSource, transcript: Transcript, *, preset: str = "default") -> list[Moment]:
+        key = self.workspace.cache_key("moments", {"transcript_revision": transcript.revision_id, "prompt": "moments-phase2a-v1", "provider": type(self.provider).__name__, "model": getattr(self.provider, "model", "fixture"), "preset": preset})
+        path = self.workspace.root / "analysis" / f"moments-{key}.json"
+        raw = json.loads(path.read_text(encoding="utf-8"))["moments"] if path.exists() else self.provider.discover_moments(chunk_transcript(transcript), {"source_id": source.id, "duration_seconds": float(source.duration.seconds), "transcript_revision": transcript.revision_id, "preset": preset})
+        moments = []
+        for index, item in enumerate(raw):
+            start_seconds, end_seconds = Fraction(str(item["start"])), Fraction(str(item["end"]))
+            if start_seconds < 0 or end_seconds <= start_seconds or end_seconds > source.duration.seconds:
+                continue
+            segment_ids = [segment.id for segment in transcript.segments if segment.start.seconds < end_seconds and segment.end.seconds > start_seconds]
+            word_ids = [word.id for word in transcript.words if word.start.seconds < end_seconds and word.end.seconds > start_seconds]
+            moments.append(Moment(
+                id=item.get("id") or f"moment_{index + 1}", source_id=source.id,
+                source_in=MediaTime.from_seconds(start_seconds, source.time_base, exact=False),
+                source_out=MediaTime.from_seconds(end_seconds, source.time_base, exact=False),
+                transcript_segment_ids=segment_ids, transcript_word_ids=word_ids,
+                summary=str(item["summary"]), types=list(item.get("types", [])), entities=list(item.get("entities", [])),
+                topic_ids=list(item.get("topics", [])), characteristics=dict(item.get("characteristics", {})),
+                provider_provenance={"provider": type(self.provider).__name__, "model": getattr(self.provider, "model", "fixture"), "prompt_version": "moments-phase2a-v1"},
+                confidence=float(item.get("confidence", 0)), reasoning=str(item.get("reasoning", "")),
+            ))
+        moments = consolidate_moments(moments)
+        if not path.exists():
+            atomic_write_json(path, {"moments": [{
+                "id": moment.id, "start": float(moment.source_in.seconds), "end": float(moment.source_out.seconds),
+                "summary": moment.summary, "types": moment.types, "segment_ids": moment.transcript_segment_ids,
+                "word_ids": moment.transcript_word_ids, "topics": moment.topic_ids, "entities": moment.entities,
+                "characteristics": moment.characteristics, "confidence": moment.confidence, "reasoning": moment.reasoning,
+            } for moment in moments]})
+        return moments
+
+    def construct_story_concepts(self, moments: list[Moment], transcript: Transcript, *, preset: str = "default") -> list[StoryConcept]:
+        identity = [{"id": item.id, "summary": item.summary, "types": item.types, "topics": item.topic_ids, "entities": item.entities, "start": float(item.source_in.seconds), "end": float(item.source_out.seconds)} for item in moments]
+        key = self.workspace.cache_key("stories", {"transcript_revision": transcript.revision_id, "moments": identity, "prompt": "stories-phase2a-v1", "provider": type(self.provider).__name__, "model": getattr(self.provider, "model", "fixture"), "preset": preset})
+        path = self.workspace.root / "analysis" / f"stories-{key}.json"
+        raw = json.loads(path.read_text(encoding="utf-8"))["stories"] if path.exists() else self.provider.construct_stories(identity, {"target_duration_seconds": [25, 60], "segment_count": [2, 6], "preset": preset})
+        stories = [StoryConcept(
+            id=item.get("id") or f"story_{index + 1}", title=item["title"], premise=item["premise"], hook=item["hook"], context=item["context"],
+            development=item["development"], payoff=item["payoff"], moment_ids=list(dict.fromkeys(item["moment_ids"])),
+            target_duration_seconds=float(item["target_duration_seconds"]), explanation=item["explanation"], coherence=dict(item.get("coherence", {})),
+            integrity_considerations=list(item.get("integrity_considerations", [])),
+        ) for index, item in enumerate(raw) if len(set(item.get("moment_ids", []))) >= 2]
+        if not path.exists():
+            atomic_write_json(path, {"stories": [{**item, "id": story.id} for item, story in zip(raw, stories)]})
+        return stories
 
     def run_source(self, source_path: Path, output_dir: Path, *, source_id: str = "media_001") -> tuple[MediaSource, Transcript, list[ClipCandidate]]:
         source = media_source_from_probe(source_id, source_path, self.media.inspect(source_path))

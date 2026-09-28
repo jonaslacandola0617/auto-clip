@@ -17,3 +17,5 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+autoclip = ["assets/detectors/*.tflite", "assets/detectors/*.json"]

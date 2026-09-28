@@ -149,13 +149,15 @@ class GeminiProvider(AIProvider):
         return moments
 
     def construct_stories(self, moments: list[dict[str, Any]], metadata: dict[str, Any]) -> list[dict[str, Any]]:
-        item = {"type": "OBJECT", "required": ["title", "premise", "hook", "context", "development", "payoff", "moment_ids", "target_duration_seconds", "explanation", "coherence", "integrity_considerations"], "properties": {
+        item = {"type": "OBJECT", "required": ["title", "central_topic", "viewer_premise", "premise", "hook", "context", "development", "payoff", "moment_ids", "moment_rationales", "target_duration_seconds", "explanation", "coherence", "integrity_considerations", "understandable_without_source"], "properties": {
             "title": {"type": "STRING"}, "premise": {"type": "STRING"}, "hook": {"type": "STRING"}, "context": {"type": "STRING"},
             "development": {"type": "STRING"}, "payoff": {"type": "STRING"}, "moment_ids": {"type": "ARRAY", "items": {"type": "STRING"}},
             "target_duration_seconds": {"type": "NUMBER"}, "explanation": {"type": "STRING"}, "coherence": {"type": "OBJECT"},
             "integrity_considerations": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "central_topic": {"type": "STRING"}, "viewer_premise": {"type": "STRING"}, "moment_rationales": {"type": "OBJECT"},
+            "understandable_without_source": {"type": "BOOLEAN"},
         }}
-        payload = self._generate_structured({"task": "Build only coherent truthful multi-moment short-form stories. Return none when evidence is insufficient.", "moments": moments, "metadata": metadata}, {"type": "OBJECT", "required": ["stories"], "properties": {"stories": {"type": "ARRAY", "items": item}}})
+        payload = self._generate_structured({"task": "Build only coherent truthful multi-moment short-form stories for cold viewers. Require a real source-grounded hook, necessary context, development, payoff, a specific central topic, and a necessity rationale for every moment. Return none when evidence is insufficient.", "moments": moments, "metadata": metadata}, {"type": "OBJECT", "required": ["stories"], "properties": {"stories": {"type": "ARRAY", "items": item}}})
         stories = payload.get("stories")
         if not isinstance(stories, list):
             raise AIResponseError("story response is missing stories")

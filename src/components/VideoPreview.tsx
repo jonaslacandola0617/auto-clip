@@ -1,13 +1,28 @@
 import { useEffect, useRef } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
-export function VideoPreview({ path, start = 0, end, vertical = false }: { path: string; start?: number; end?: number; vertical?: boolean }) {
+export function VideoPreview({ path, start = 0, end, vertical = false, seekTo, seekKey = 0, onTimeUpdate }: {
+  path: string;
+  start?: number;
+  end?: number;
+  vertical?: boolean;
+  /** Bump this to a new timestamp (e.g. from a transcript timecode click) to seek and resume playback. */
+  seekTo?: number;
+  seekKey?: number;
+  /** Reports the current playhead position, e.g. so a transcript can highlight the segment being played. */
+  onTimeUpdate?: (seconds: number) => void;
+}) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     const video = videoRef.current;
     if (video && Number.isFinite(start)) video.currentTime = start;
   }, [path, start]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video && seekTo !== undefined) { video.currentTime = seekTo; void video.play().catch(() => {}); }
+  }, [seekTo, seekKey]);
 
   return (
     <video
@@ -18,6 +33,7 @@ export function VideoPreview({ path, start = 0, end, vertical = false }: { path:
       preload="metadata"
       onLoadedMetadata={(event) => { event.currentTarget.currentTime = start; }}
       onTimeUpdate={(event) => {
+        onTimeUpdate?.(event.currentTarget.currentTime);
         if (end !== undefined && event.currentTarget.currentTime >= end) {
           event.currentTarget.pause();
           event.currentTarget.currentTime = start;

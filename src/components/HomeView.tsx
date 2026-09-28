@@ -9,10 +9,19 @@ export function HomeView({ doctor, recents, loading, onNew, onOpen, onOpenRecent
       {doctor && !environmentReady ? <div className="notice notice--warning"><strong>Processing setup needs attention.</strong><span>Open Settings to see what AutoClip needs before transcription.</span></div> : null}
       <Panel title="Recent projects" action={doctor ? <Status ready={environmentReady}>{environmentReady ? "Processing ready" : "Setup incomplete"}</Status> : undefined}>
         {loading ? <div className="skeleton-list" aria-label="Loading recent projects"><span /><span /><span /></div> : recents.length ? (
-          <div className="recent-list">{recents.map((project) => <article className="recent-row" key={project.path}><button className="recent-row__main" onClick={() => onOpenRecent(project.path)}><strong>{project.name}</strong><span>{project.available ? project.path : "Project unavailable"}</span></button><time>{new Date(project.last_opened).toLocaleDateString()}</time><Button variant="quiet" onClick={() => onRemoveRecent(project.path)} aria-label={`Remove ${project.name} from recent projects`}>Remove</Button></article>)}</div>
+          <div className="recent-list">{recents.map((project) => (
+            <article className="recent-row" key={project.path}>
+              <button className="recent-row__main" onClick={() => onOpenRecent(project.path)} disabled={!project.available}>
+                <strong>{project.name}</strong>
+                <span>{project.available ? project.path : "Project unavailable — locate the file to continue"}</span>
+              </button>
+              <time>{new Date(project.last_opened).toLocaleDateString()}</time>
+              {project.available ? <Button variant="quiet" onClick={() => onOpenRecent(project.path)}>Continue</Button> : null}
+              <Button variant="quiet" onClick={() => onRemoveRecent(project.path)} aria-label={`Remove ${project.name} from recent projects`}>Remove</Button>
+            </article>
+          ))}</div>
         ) : <EmptyState title="No recent projects" description="Create a project or open an existing AutoClip project to begin." action={<Button variant="primary" onClick={onNew}>New project</Button>} />}
       </Panel>
     </div>
   );
 }
-

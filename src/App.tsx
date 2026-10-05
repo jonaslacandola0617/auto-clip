@@ -29,6 +29,12 @@ export function App() {
   }, []);
 
   const refreshRecents = useCallback(async () => setRecents(await workerRequest<RecentProject[]>("list_recent_projects")), []);
+  const refreshEnvironment = useCallback(async () => {
+    const [doctorState, settingsState] = await Promise.all([workerRequest<Doctor>("doctor"), workerRequest<Settings>("get_settings")]);
+    setDoctor(doctorState);
+    setSettings(settingsState);
+    document.documentElement.dataset.theme = settingsState.theme;
+  }, []);
   const refreshJobs = useCallback(async (projectPath: string) => setJobs(await workerRequest<Job[]>("list_jobs", { project_path: projectPath })), []);
   const refreshProject = useCallback(async (projectPath: string) => setProject(await workerRequest<ProjectState>("get_project_state", { path: projectPath })), []);
 
@@ -39,7 +45,7 @@ export function App() {
         const job = await workerRequest<Job>("get_job", { job_id: jobId });
         setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
         await refreshProject(watchedProjectPath);
-        if ((job.state === "queued" || job.state === "running") && attempts++ < 7200) window.setTimeout(() => { void poll(); }, 500);
+        if (["queued", "waiting", "running", "cancelling"].includes(job.state) && attempts++ < 7200) window.setTimeout(() => { void poll(); }, 500);
         else await refreshJobs(watchedProjectPath);
       } catch (reason) { reportError(reason); }
     };
@@ -53,7 +59,7 @@ export function App() {
       .finally(() => setLoading(false));
   }, [reportError]);
 
-  const hasActiveJob = jobs.some((job) => job.state === "queued" || job.state === "running");
+  const hasActiveJob = jobs.some((job) => ["queued", "waiting", "running", "cancelling"].includes(job.state));
   const projectPath = project?.path;
   useEffect(() => {
     if (!projectPath || !hasActiveJob) return;
@@ -126,6 +132,34 @@ export function App() {
     } catch (reason) { reportError(reason); }
   }
 
+  async function setGeminiApiKey(apiKey: string) {
+    try {
+      await workerRequest("set_gemini_api_key", { api_key: apiKey });
+      await refreshEnvironment();
+      setError(null);
+    } catch (reason) { reportError(reason); throw reason; }
+  }
+
+  async function clearGeminiApiKey() {
+    try {
+      await workerRequest("clear_gemini_api_key");
+      await refreshEnvironment();
+      setError(null);
+    } catch (reason) { reportError(reason); throw reason; }
+  }
+
+  async function clearCache() {
+    try {
+      return await workerRequest<{ removed_bytes: number }>("clear_cache", project ? { project_path: project.path } : {});
+    } catch (reason) { reportError(reason); throw reason; }
+  }
+
+  async function exportDiagnostics() {
+    try {
+      return await workerRequest<{ path: string }>("export_diagnostics");
+    } catch (reason) { reportError(reason); throw reason; }
+  }
+
   async function removeRecent(path: string) {
     try { setRecents(await workerRequest<RecentProject[]>("remove_recent_project", { path })); } catch (reason) { reportError(reason); }
   }
@@ -141,7 +175,7 @@ export function App() {
   return <AppShell activeView={view} projectName={project?.name} projectNeedsAttention={project ? project.status === "source_missing" : undefined} systemReady={systemReady} onNavigate={setView}>
     {error ? <div className="error-banner" role="alert"><div><strong>{error.message}</strong>{error.details ? <details><summary>View details</summary><pre>{error.details}</pre></details> : null}</div><button aria-label="Dismiss error" onClick={() => setError(null)}>×</button></div> : null}
 
-    {view === "home" ? <HomeView doctor={doctor} recents={recents} loading={loading} onNew={() => setShowNewProject(true)} onOpen={chooseProject} onOpenRecent={openProject} onRemoveRecent={removeRecent} /> : null}
+    {view === "home" ? <HomeView doctor={doctor} recents={recents} loading={loading} onNew={() => setShowNewProject(true)} onOpen={chooseProject} onOpenRecent={openProject} onRemoveRecent={removeRecent} onOpenSettings={() => setView("settings")} /> : null}
 
     {view === "overview" && project ? <OverviewView project={project} doctor={doctor} jobs={jobs} onChooseSource={chooseSource} onStartJob={startProjectJob} onCancelJob={cancelJob} onNavigate={setView} /> : null}
 
@@ -151,7 +185,7 @@ export function App() {
 
     {view === "exports" && project ? <ExportsView clips={project.clips} editSequences={project.edit_sequences} productionRuns={project.production_runs} outputs={project.outputs} busy={hasActiveJob} onStartJob={startProjectJob} /> : null}
 
-    {view === "settings" && settings ? <SettingsView settings={settings} doctor={doctor} onSave={saveSettings} /> : null}
+    {view === "settings" && settings ? <SettingsView settings={settings} doctor={doctor} onSave={saveSettings} onSetGeminiApiKey={setGeminiApiKey} onClearGeminiApiKey={clearGeminiApiKey} onClearCache={clearCache} onExportDiagnostics={exportDiagnostics} /> : null}
 
     {showNewProject && settings ? <ProjectDialog defaultLocation={settings.default_project_directory} onClose={() => setShowNewProject(false)} onCreate={createProject} /> : null}
   </AppShell>;

@@ -1,13 +1,15 @@
 {
   "name": "autoclip-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0-rc.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "vitest run",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "release:worker": "powershell -ExecutionPolicy Bypass -File scripts/build-windows-worker.ps1",
+    "release:build": "powershell -ExecutionPolicy Bypass -File scripts/build-windows-release.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

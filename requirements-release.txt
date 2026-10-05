@@ -1,0 +1,2 @@
+-r requirements-live.txt
+pyinstaller==6.22.0

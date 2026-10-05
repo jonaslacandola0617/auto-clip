@@ -5,6 +5,8 @@ from fractions import Fraction
 import hashlib
 import json
 import math
+import sys
+import types
 from pathlib import Path
 from typing import Iterable, Protocol
 
@@ -48,11 +50,33 @@ class SubjectDetector(Protocol):
 class MediaPipeFaceDetector:
     """Packaged offline detector; coordinates are normalized to proxy frames."""
     def __init__(self, model_path: str | None = None, *, confidence: float = .55) -> None:
+        # MediaPipe imports its optional audio task package at module load. A
+        # missing audio device can make sounddevice fail before the independent
+        # vision runtime loads, so expose that unused optional dependency as
+        # unavailable during first import.
+        first_mediapipe_import = "mediapipe" not in sys.modules
+        block_sounddevice = first_mediapipe_import and "sounddevice" not in sys.modules
+        block_matplotlib = first_mediapipe_import and "matplotlib" not in sys.modules
+        if block_sounddevice:
+            sys.modules["sounddevice"] = None
+        if block_matplotlib:
+            matplotlib_stub = types.ModuleType("matplotlib")
+            matplotlib_stub.__path__ = []
+            pyplot_stub = types.ModuleType("matplotlib.pyplot")
+            matplotlib_stub.pyplot = pyplot_stub
+            sys.modules["matplotlib"] = matplotlib_stub
+            sys.modules["matplotlib.pyplot"] = pyplot_stub
         try:
             import cv2
             import mediapipe as mp
         except ImportError as exc:
             raise RuntimeError("The local visual detector runtime is unavailable.") from exc
+        finally:
+            if block_sounddevice:
+                sys.modules.pop("sounddevice", None)
+            if block_matplotlib:
+                sys.modules.pop("matplotlib.pyplot", None)
+                sys.modules.pop("matplotlib", None)
         options = mp.tasks.vision.FaceDetectorOptions(
             base_options=mp.tasks.BaseOptions(model_asset_path=str(Path(model_path) if model_path else detector_asset_path())),
             running_mode=mp.tasks.vision.RunningMode.IMAGE, min_detection_confidence=confidence)
@@ -69,6 +93,9 @@ class MediaPipeFaceDetector:
                 score = float(item.categories[0].score) if item.categories else 0.
                 found.append(Detection(at, (box.origin_x+box.width/2)/width, (box.origin_y+box.height/2)/height, score, box.width/width, box.height/height))
             yield sorted(found, key=lambda detection: detection.confidence*detection.width*detection.height, reverse=True)
+
+    def close(self) -> None:
+        self._detector.close()
 
 
 OpenCVFaceDetector = MediaPipeFaceDetector

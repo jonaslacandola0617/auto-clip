@@ -20,11 +20,13 @@ class FasterWhisperTranscriber:
         device: str = "cpu",
         compute_type: str = "int8",
         beam_size: int = 1,
+        model_cache: Path | None = None,
     ) -> None:
         self.model_size = model_size
         self.device = device
         self.compute_type = compute_type
         self.beam_size = beam_size
+        self.model_cache = model_cache.resolve() if model_cache else None
 
     @property
     def cache_identity(self) -> dict[str, Any]:
@@ -48,8 +50,9 @@ class FasterWhisperTranscriber:
         model_path = Path(self.model_size).expanduser()
         if model_path.is_dir():
             return True
-        cache_root = os.environ.get("HF_HUB_CACHE")
-        if cache_root:
+        if self.model_cache:
+            hub = self.model_cache
+        elif cache_root := os.environ.get("HF_HUB_CACHE"):
             hub = Path(cache_root)
         else:
             hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
@@ -80,7 +83,14 @@ class FasterWhisperTranscriber:
 
         check_cancelled()
         report(0.02, "Loading cached transcription model" if self.model_is_cached else "Downloading transcription model")
-        model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
+        if self.model_cache:
+            self.model_cache.mkdir(parents=True, exist_ok=True)
+        model = WhisperModel(
+            self.model_size,
+            device=self.device,
+            compute_type=self.compute_type,
+            download_root=str(self.model_cache) if self.model_cache else None,
+        )
         check_cancelled()
         report(0.08, "Starting local transcription")
         segments, info = model.transcribe(

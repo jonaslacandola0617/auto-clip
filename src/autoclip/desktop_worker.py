@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import traceback
 from typing import Any
 
 from .desktop_protocol import ProtocolError, failure, parse_request, success
 from .desktop_service import DesktopService
+from .version import APP_VERSION
 
 
 def handle(service: DesktopService, raw: Any) -> dict[str, Any]:
@@ -19,7 +21,7 @@ def handle(service: DesktopService, raw: Any) -> dict[str, Any]:
         return failure(request_id, exc.code, exc.message, recoverable=exc.recoverable, details=getattr(exc, "details", None))
     except Exception:
         traceback.print_exc(file=sys.stderr)
-        return failure(request_id, "internal_error", "AutoClip couldn't complete this action. Try again or view the development logs.")
+        return failure(request_id, "internal_error", "AutoClip couldn't complete this action. Try again or export diagnostics from Settings.")
 
 
 def serve(service: DesktopService) -> int:
@@ -45,6 +47,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="autoclip-desktop-worker")
     parser.add_argument("--stdio", action="store_true", required=True)
     parser.parse_args(argv)
+    expected_version = os.environ.get("AUTOCLIP_APP_VERSION")
+    if expected_version and expected_version != APP_VERSION:
+        print(f"AutoClip worker version mismatch: desktop {expected_version}, worker {APP_VERSION}", file=sys.stderr)
+        return 78
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8", errors="strict")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="strict")
     return serve(DesktopService())
 
 

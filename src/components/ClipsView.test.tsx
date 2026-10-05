@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ClipsView } from "./ClipsView";
 import type { Job } from "../types";
 
-vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path }));
+vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path, invoke: vi.fn().mockImplementation((_command: string, payload: { path: string }) => Promise.resolve(payload.path)) }));
 
 const baseJob: Job = { id: "job", type: "analyze", state: "running", progress: .4, current_stage: "Analyzing section 4 of 12", created_at: "now", started_at: "now", completed_at: null, error: null, cancellable: true, project_path: "project" };
 const props = { candidates: [], clips: [], storyConcepts: [], editSequences: [], workflowProfiles: [], campaignProfiles: [], productionRuns: [], sourcePath: "source.mp4", geminiReady: true, busy: false, smartEditJob: null, onCommand: vi.fn(), onStartJob: vi.fn(), onRelinkEnhancementAsset: vi.fn() };

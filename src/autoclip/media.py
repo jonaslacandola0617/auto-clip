@@ -46,6 +46,16 @@ def _project_local_static_binary(name: str) -> str | None:
     return str(candidate) if candidate.exists() else None
 
 
+def _managed_media_binary(name: str) -> str | None:
+    suffix = ".exe" if os.name == "nt" else ""
+    configured = os.environ.get("AUTOCLIP_FFMPEG_DIR")
+    if configured:
+        candidate = Path(configured).resolve() / f"{name}{suffix}"
+        if candidate.is_file():
+            return str(candidate)
+    return _project_local_static_binary(name)
+
+
 def fingerprint_file(path: Path, *, sample_bytes: int = 1024 * 1024) -> dict[str, Any]:
     stat = path.stat()
     digest = hashlib.sha256()
@@ -91,14 +101,25 @@ class FFmpegService:
     ffprobe: str = "ffprobe"
 
     def __post_init__(self) -> None:
-        if self.ffmpeg == "ffmpeg" and shutil.which(self.ffmpeg) is None:
-            self.ffmpeg = _project_local_static_binary("ffmpeg") or self.ffmpeg
-        if self.ffprobe == "ffprobe" and shutil.which(self.ffprobe) is None:
-            self.ffprobe = _project_local_static_binary("ffprobe") or self.ffprobe
+        release = os.environ.get("AUTOCLIP_RELEASE") == "1"
+        if self.ffmpeg == "ffmpeg":
+            self.ffmpeg = _managed_media_binary("ffmpeg") or ("ffmpeg" if not release else "")
+        if self.ffprobe == "ffprobe":
+            self.ffprobe = _managed_media_binary("ffprobe") or ("ffprobe" if not release else "")
 
     @property
     def available(self) -> bool:
-        return shutil.which(self.ffmpeg) is not None and shutil.which(self.ffprobe) is not None
+        return bool(self.ffmpeg and self.ffprobe and shutil.which(self.ffmpeg) and shutil.which(self.ffprobe))
+
+    @property
+    def bundled(self) -> bool:
+        return bool(self.ffmpeg and self.ffprobe and Path(self.ffmpeg).is_file() and Path(self.ffprobe).is_file())
+
+    def version(self) -> str:
+        if not self.available:
+            return "Unavailable"
+        first_line = self._run([self.ffmpeg, "-version"]).stdout.splitlines()[0]
+        return first_line.removeprefix("ffmpeg version ").split()[0]
 
     def _run(self, arguments: Sequence[str]) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(list(arguments), check=False, capture_output=True, text=True, encoding="utf-8")
@@ -169,20 +190,38 @@ class FFmpegService:
         if start.seconds < 0 or end.seconds <= start.seconds:
             raise ValueError("invalid clip range")
         output.parent.mkdir(parents=True, exist_ok=True)
-        self._run([
-            self.ffmpeg, "-y", "-ss", f"{float(start.seconds):.9f}", "-i", str(source),
-            "-t", f"{float(end.seconds - start.seconds):.9f}", "-map", "0:v:0", "-map", "0:a?",
-            "-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", str(output),
-        ])
+        partial = output.with_name(f"{output.stem}.partial{output.suffix}")
+        partial.unlink(missing_ok=True)
+        try:
+            self._run([
+                self.ffmpeg, "-y", "-ss", f"{float(start.seconds):.9f}", "-i", str(source),
+                "-t", f"{float(end.seconds - start.seconds):.9f}", "-map", "0:v:0", "-map", "0:a?",
+                "-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", str(partial),
+            ])
+            os.replace(partial, output)
+        finally:
+            partial.unlink(missing_ok=True)
 
     def create_lazy_proxy(self, source: Path, output: Path, *, width: int = 640) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
-        self._run([self.ffmpeg, "-y", "-i", str(source), "-vf", f"scale={width}:-2", "-c:v", "libx264", "-preset", "veryfast", "-an", str(output)])
+        partial = output.with_name(f"{output.stem}.partial{output.suffix}")
+        partial.unlink(missing_ok=True)
+        try:
+            self._run([self.ffmpeg, "-y", "-i", str(source), "-vf", f"scale={width}:-2", "-c:v", "libx264", "-preset", "veryfast", "-an", str(partial)])
+            os.replace(partial, output)
+        finally:
+            partial.unlink(missing_ok=True)
 
     def render_vertical_preview(self, source: Path, output: Path, *, crop_x: int, crop_y: int, crop_width: int, crop_height: int) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
         vf = f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y},scale=1080:1920"
-        self._run([self.ffmpeg, "-y", "-i", str(source), "-vf", vf, "-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-c:a", "aac", str(output)])
+        partial = output.with_name(f"{output.stem}.partial{output.suffix}")
+        partial.unlink(missing_ok=True)
+        try:
+            self._run([self.ffmpeg, "-y", "-i", str(source), "-vf", vf, "-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-c:a", "aac", str(partial)])
+            os.replace(partial, output)
+        finally:
+            partial.unlink(missing_ok=True)
 
     def render_vertical_clip(
         self,
@@ -204,16 +243,22 @@ class FFmpegService:
         if output.exists():
             raise FileExistsError(output)
         output.parent.mkdir(parents=True, exist_ok=True)
+        partial = output.with_name(f"{output.stem}.partial{output.suffix}")
+        partial.unlink(missing_ok=True)
         filters = [f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y}", f"scale={width}:{height}"]
         if captions:
             escaped = str(captions.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
             filters.append(f"ass='{escaped}'")
-        self._run([
-            self.ffmpeg, "-ss", f"{float(start.seconds):.9f}", "-i", str(source),
-            "-t", f"{float(end.seconds - start.seconds):.9f}", "-vf", ",".join(filters),
-            "-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast",
-            "-c:a", "aac", "-movflags", "+faststart", str(output),
-        ])
+        try:
+            self._run([
+                self.ffmpeg, "-ss", f"{float(start.seconds):.9f}", "-i", str(source),
+                "-t", f"{float(end.seconds - start.seconds):.9f}", "-vf", ",".join(filters),
+                "-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast",
+                "-c:a", "aac", "-movflags", "+faststart", str(partial),
+            ])
+            os.replace(partial, output)
+        finally:
+            partial.unlink(missing_ok=True)
 
     def plan_edit_sequence_render(self, source: Path, sequence: EditSequence, output: Path, *, width: int = 1080, height: int = 1920, captions: Path | None = None, visual_plan: VisualEditPlan | None = None, enhancement_plan: EnhancementPlan | None = None, graphics: Path | None = None) -> list[str]:
         if len(sequence.segments) < 2:

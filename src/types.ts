@@ -1,15 +1,20 @@
 export type Capability = { ready: boolean; summary: string };
 
 export type Doctor = {
+  runtime: Capability;
+  storage: Capability;
   ffmpeg: Capability;
   ffprobe: Capability;
   whisper: Capability;
+  model: Capability;
   opencv: Capability;
   mediapipe: Capability;
   otio: Capability;
   gemini: Capability;
   acceleration: Capability;
   python: string;
+  app_version: string;
+  paths: { data: string; cache: string; models: string; logs: string };
 };
 
 export type SourceSummary = {
@@ -117,7 +122,7 @@ export type RecentProject = { path: string; name: string; last_opened: string; a
 export type Job = {
   id: string;
   type: string;
-  state: "queued" | "running" | "completed" | "failed" | "cancelled";
+  state: "queued" | "waiting" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
   progress: number;
   current_stage: string;
   created_at: string;

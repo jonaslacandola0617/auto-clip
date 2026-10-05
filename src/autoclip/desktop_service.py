@@ -7,6 +7,7 @@ import re
 import shutil
 import sys
 import threading
+import zipfile
 from fractions import Fraction
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -15,6 +16,7 @@ from typing import Any
 
 from .ai import GeminiProvider
 from .captions import CAPTION_PRESETS, build_caption_track, build_edit_sequence_caption_track, export_ass, export_edit_sequence_ass, export_srt
+from .credentials import CredentialStore
 from .enhancements import plan_enhancements, relink_asset, serialize_graphics_ass, validate_enhancement_plan
 from .desktop_protocol import ProtocolError
 from .exporters.otio import export_otio
@@ -32,10 +34,12 @@ from .production import (
 )
 from .intelligent_edit import construct_candidate_stories, plan_reviewed_sequence, reflow_sequence, review_editorial_quality, validate_integrity
 from .pipeline import CorePipeline
+from .release import MODEL_APPROX_BYTES, ReleasePaths, require_free_space, sanitize_diagnostic_text
 from .storage import Workspace, atomic_write_json, load_project, save_project
 from .time import MediaTime
 from .transcription import FasterWhisperTranscriber, TranscriptionCancelled
-from .vision import DETECTOR_CONFIG, DETECTOR_VERSION, analyze_video_clip, analyze_visual_observations, build_visual_edit_plan, crop_geometry, detector_asset_path
+from .vision import DETECTOR_CONFIG, DETECTOR_VERSION, MediaPipeFaceDetector, analyze_video_clip, analyze_visual_observations, build_visual_edit_plan, crop_geometry
+from .version import APP_VERSION
 
 
 def _now() -> str:
@@ -71,10 +75,12 @@ class DesktopService:
         default_root = Path(os.environ.get("LOCALAPPDATA", Path.cwd())) / "AutoClip"
         self.state_root = (state_root or Path(os.environ.get("AUTOCLIP_APP_DATA", default_root))).resolve()
         self.project_root = (project_root or Path(__file__).resolve().parents[2]).resolve()
-        self.state_root.mkdir(parents=True, exist_ok=True)
+        self.paths = ReleasePaths(self.state_root)
+        self.paths.ensure()
         self.recents_path = self.state_root / "recent-projects.json"
         self.settings_path = self.state_root / "settings.json"
         self.profile_library_path = self.state_root / "profiles.json"
+        self.credentials = CredentialStore(self.state_root / "credentials" / "gemini.dpapi")
         self.jobs = JobManager(self.state_root / "jobs.json")
         _development_api_key(self.project_root)
 
@@ -108,30 +114,60 @@ class DesktopService:
             "create_production_run": self.create_production_run,
             "update_production_run": self.update_production_run,
             "bulk_production_action": self.bulk_production_action,
+            "set_gemini_api_key": self.set_gemini_api_key,
+            "clear_gemini_api_key": self.clear_gemini_api_key,
+            "clear_cache": self.clear_cache,
+            "export_diagnostics": self.export_diagnostics,
         }
         return handlers[command](payload)
 
+    def _gemini_api_key(self) -> str | None:
+        development = os.environ.get("GEMINI_API_KEY")
+        if development:
+            return development
+        try:
+            return self.credentials.get_gemini_key()
+        except (OSError, RuntimeError):
+            return None
+
+    def _gemini_provider(self, settings: dict[str, Any]) -> GeminiProvider:
+        return GeminiProvider(model=settings["gemini_model"], api_key=self._gemini_api_key())
+
+    def _transcriber(self, model: str) -> FasterWhisperTranscriber:
+        return FasterWhisperTranscriber(model, device="cpu", compute_type="int8", model_cache=self.paths.models)
+
     def doctor(self, _payload: dict[str, Any] | None = None) -> dict[str, Any]:
         media = FFmpegService()
-        whisper_ready = FasterWhisperTranscriber().available
-        gemini_ready = _development_api_key(self.project_root)
+        settings = self.get_settings()
+        transcriber = self._transcriber(settings["whisper_model"])
+        whisper_ready = transcriber.available
+        gemini_ready = bool(self._gemini_api_key())
+        storage_ready = os.access(self.state_root, os.W_OK) and os.access(self.paths.cache, os.W_OK)
+        ffmpeg_version = media.version() if media.available else "unavailable"
+        detector_ready = _module_available("mediapipe") and self._detector_ready()
         return {
-            "ffmpeg": {"ready": media.available, "summary": "Ready" if media.available else "Not available"},
-            "ffprobe": {"ready": media.available, "summary": "Ready" if media.available else "Not available"},
+            "runtime": {"ready": True, "summary": f"Worker {APP_VERSION}"},
+            "storage": {"ready": storage_ready, "summary": "Ready" if storage_ready else "Application storage is not writable"},
+            "ffmpeg": {"ready": media.available, "summary": f"{'Bundled' if media.bundled else 'Development'} FFmpeg {ffmpeg_version}" if media.available else "Bundled FFmpeg unavailable"},
+            "ffprobe": {"ready": media.available, "summary": "Bundled ffprobe ready" if media.bundled else "Development ffprobe ready" if media.available else "Bundled ffprobe unavailable"},
             "whisper": {"ready": whisper_ready, "summary": "Ready - CPU processing" if whisper_ready else "Not available"},
+            "model": {"ready": transcriber.model_is_cached, "summary": f"{settings['whisper_model'].title()} model ready" if transcriber.model_is_cached else f"{settings['whisper_model'].title()} model downloads on first transcription (~{MODEL_APPROX_BYTES[settings['whisper_model']] // (1024 * 1024)} MB)"},
             "opencv": {"ready": _module_available("cv2"), "summary": "Ready" if _module_available("cv2") else "Not available"},
-            "mediapipe": {"ready": _module_available("mediapipe") and self._detector_ready(), "summary": "Ready - packaged offline detector" if _module_available("mediapipe") and self._detector_ready() else "Not available - stable framing fallback enabled"},
-            "otio": {"ready": _module_available("opentimelineio"), "summary": "Ready" if _module_available("opentimelineio") else "Not available"},
+            "mediapipe": {"ready": detector_ready, "summary": "Ready - packaged offline detector" if detector_ready else "Not available - stable framing fallback enabled"},
+            "otio": {"ready": True, "summary": "Ready - built-in OTIO export"},
             "gemini": {"ready": gemini_ready, "summary": "Configured" if gemini_ready else "API key not configured"},
             "acceleration": {"ready": False, "summary": "Not available - CPU processing will be used"},
             "python": sys.version.split()[0],
+            "app_version": APP_VERSION,
+            "paths": {"data": str(self.state_root), "cache": str(self.paths.cache), "models": str(self.paths.models), "logs": str(self.paths.logs)},
         }
 
     def _detector_ready(self) -> bool:
         try:
-            detector_asset_path()
+            detector = MediaPipeFaceDetector()
+            detector.close()
             return True
-        except RuntimeError:
+        except Exception:
             return False
 
     def _project_file(self, value: str) -> Path:
@@ -159,7 +195,7 @@ class DesktopService:
         try:
             return media_source_from_probe(source_id, path, media.inspect(path))
         except Exception as exc:
-            raise ProtocolError("media_unreadable", "We couldn't read this video. Choose another file or check that the file isn't damaged.", details=str(exc)) from exc
+            raise ProtocolError("media_unreadable", "We couldn't read this video. Choose another file or check that the file isn't damaged.", details=sanitize_diagnostic_text(str(exc))) from exc
 
     def _safe_project_directory(self, location: Path, name: str) -> Path:
         cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", name).strip().rstrip(".")
@@ -328,26 +364,20 @@ class DesktopService:
         workspace, project = self._load_project(str(payload.get("project_path", "")))
         source_id = project.sources[0].id if project.sources else "media_001"
         replacement = self._inspect_source(Path(str(payload.get("source_path", ""))), source_id)
-        source_changed = not project.sources or project.sources[0].fingerprint != replacement.fingerprint
+        if project.sources:
+            previous = project.sources[0].fingerprint
+            current = replacement.fingerprint
+            same_media = previous.get("size") == current.get("size") and previous.get("partial_sha256") == current.get("partial_sha256")
+            if not same_media:
+                raise ProtocolError(
+                    "source_fingerprint_mismatch",
+                    "This file does not match the project's original source. Choose the moved original video instead.",
+                    details="The file size or media fingerprint is different; no project data was changed.",
+                )
         if project.sources:
             project.sources[0] = replacement
         else:
             project.sources.append(replacement)
-        if source_changed:
-            project.transcripts.clear()
-            project.candidates.clear()
-            project.clips.clear()
-            project.timelines.clear()
-            project.reframe_tracks.clear()
-            project.caption_tracks.clear()
-            project.outputs.clear()
-            project.moments.clear()
-            project.story_concepts.clear()
-            project.edit_sequences.clear()
-            project.visual_edit_plans.clear()
-            project.enhancement_plans.clear()
-            project.production_runs.clear()
-            project.analysis_revision = None
         save_project(workspace, project)
         return self._state(workspace, project)
 
@@ -845,7 +875,7 @@ class DesktopService:
             settings.update(json.loads(self.settings_path.read_text(encoding="utf-8")))
         if settings["gemini_model"] == "gemini-2.5-flash":
             settings["gemini_model"] = "gemini-3.6-flash"
-        settings["gemini_configured"] = _development_api_key(self.project_root)
+        settings["gemini_configured"] = bool(self._gemini_api_key())
         return settings
 
     def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -861,6 +891,53 @@ class DesktopService:
         settings["ai_provider"] = "Gemini"
         atomic_write_json(self.settings_path, settings)
         return self.get_settings()
+
+    def set_gemini_api_key(self, payload: dict[str, Any]) -> dict[str, Any]:
+        value = str(payload.get("api_key", ""))
+        try:
+            self.credentials.set_gemini_key(value)
+        except ValueError as exc:
+            raise ProtocolError("invalid_credential", str(exc)) from exc
+        except (OSError, RuntimeError) as exc:
+            raise ProtocolError("credential_storage_failed", "AutoClip could not store the API key securely for this Windows user.", details=sanitize_diagnostic_text(str(exc))) from exc
+        return {"configured": True}
+
+    def clear_gemini_api_key(self, _payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.credentials.clear_gemini_key()
+        os.environ.pop("GEMINI_API_KEY", None)
+        return {"configured": False}
+
+    def clear_cache(self, payload: dict[str, Any]) -> dict[str, Any]:
+        project_value = str(payload.get("project_path", "")).strip()
+        removed = 0
+        targets = [self.paths.cache]
+        if project_value:
+            workspace, _project = self._load_project(project_value)
+            targets.append(workspace.root / "cache")
+        for target in targets:
+            resolved = target.resolve()
+            allowed_roots = [self.state_root.resolve()]
+            if project_value:
+                allowed_roots.append(self._project_file(project_value).parent.resolve())
+            if not any(resolved == root / "cache" for root in allowed_roots):
+                raise ProtocolError("unsafe_cache_path", "AutoClip refused to clean an unexpected path.", recoverable=False)
+            if resolved.exists():
+                removed += sum(path.stat().st_size for path in resolved.rglob("*") if path.is_file())
+                shutil.rmtree(resolved)
+            resolved.mkdir(parents=True, exist_ok=True)
+        return {"removed_bytes": removed}
+
+    def export_diagnostics(self, _payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.paths.diagnostics.mkdir(parents=True, exist_ok=True)
+        output = self.paths.diagnostics / f"AutoClip-diagnostics-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+        doctor = self.doctor()
+        doctor["gemini"] = {"ready": doctor["gemini"]["ready"], "summary": "Configured" if doctor["gemini"]["ready"] else "Not configured"}
+        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("system.json", json.dumps(doctor, ensure_ascii=False, indent=2))
+            for log_path in self.paths.logs.glob("*.log"):
+                content = sanitize_diagnostic_text(log_path.read_text(encoding="utf-8", errors="replace"))
+                archive.writestr(f"logs/{log_path.name}", content[-500_000:])
+        return {"path": str(output)}
 
     def start_job(self, payload: dict[str, Any]) -> dict[str, Any]:
         job_type = str(payload.get("type", ""))
@@ -902,7 +979,33 @@ class DesktopService:
                 runner = lambda _id, event, update: self._export_job(project_path, str(payload.get("format", "")), str(payload.get("clip_id", "")) or None, event, update, str(payload.get("edit_sequence_id", "")) or None)
         else:
             raise ProtocolError("unsupported_job", "This processing job is not available yet.")
+        if project_path:
+            self._check_job_disk_space(job_type, project_path, payload)
         return asdict(self.jobs.start(job_type, runner, project_path=project_path, cancellable=True))
+
+    def _check_job_disk_space(self, job_type: str, project_path: str, payload: dict[str, Any]) -> None:
+        workspace, project = self._load_project(project_path)
+        source_size = int(project.sources[0].fingerprint.get("size", 0)) if project.sources else 0
+        if job_type == "transcribe":
+            settings = self.get_settings()
+            transcriber = self._transcriber(settings["whisper_model"])
+            if not transcriber.model_is_cached:
+                require_free_space(self.paths.models, MODEL_APPROX_BYTES[settings["whisper_model"]] + 256 * 1024 * 1024, "Transcription model download")
+            audio_estimate = 256 * 1024 * 1024
+            if project.sources:
+                audio_estimate = max(audio_estimate, int(float(project.sources[0].duration.seconds) * 32_000 * 1.25))
+            require_free_space(workspace.root, audio_estimate, "Transcription preparation")
+        elif job_type in {"proxy", "preview", "smart_preview"}:
+            require_free_space(workspace.root, max(512 * 1024 * 1024, source_size // 3), "Preview generation")
+        elif job_type in {"render", "smart_render"}:
+            require_free_space(workspace.root / "exports", max(1024 * 1024 * 1024, source_size // 2), "Final render")
+        elif job_type == "batch_render":
+            run_id = str(payload.get("production_run_id", ""))
+            run = next((item for item in project.production_runs if item.id == run_id), None)
+            count = len(run.selected_edit_ids or run.accepted_edit_ids) if run else 1
+            require_free_space(workspace.root / "exports", max(1024 * 1024 * 1024, count * 512 * 1024 * 1024), "Batch render")
+        elif job_type == "production_package":
+            require_free_space(workspace.root / "exports", max(512 * 1024 * 1024, source_size // 4), "Production package")
 
     def _doctor_job(self, event: threading.Event, update: Any) -> None:
         update(0.25, "Checking processing capabilities", True)
@@ -924,8 +1027,8 @@ class DesktopService:
         settings = self.get_settings()
         pipeline = CorePipeline(
             workspace, FFmpegService(),
-            FasterWhisperTranscriber(settings["whisper_model"], device="cpu", compute_type="int8"),
-            GeminiProvider(model=settings["gemini_model"]),
+            self._transcriber(settings["whisper_model"]),
+            self._gemini_provider(settings),
         )
         try:
             transcript = pipeline.transcribe_source(
@@ -946,14 +1049,14 @@ class DesktopService:
         if not project.sources or not project.transcripts:
             raise RuntimeError("Transcribe the source before analyzing clips.")
         settings = self.get_settings()
-        provider = GeminiProvider(model=settings["gemini_model"])
+        provider = self._gemini_provider(settings)
         if not provider.available:
             raise RuntimeError("Gemini isn't configured yet. Add GEMINI_API_KEY and try again.")
         transcript = project.transcripts[-1]
         update(0.1, "Analyzing transcript", True)
         if event.is_set():
             return
-        pipeline = CorePipeline(workspace, FFmpegService(), FasterWhisperTranscriber(settings["whisper_model"]), provider, prompt_version="phase1b-v1")
+        pipeline = CorePipeline(workspace, FFmpegService(), self._transcriber(settings["whisper_model"]), provider, prompt_version="phase1b-v1")
         update(0.3, "Analyzing transcript sections", False)
         candidates = pipeline.analyze_source(project.sources[0], transcript)
         update(0.85, "Ranking clips", False)
@@ -967,11 +1070,11 @@ class DesktopService:
         if not project.sources or not project.transcripts:
             raise RuntimeError("Transcribe the source before creating Smart Edits.")
         settings = self.get_settings()
-        provider = GeminiProvider(model=settings["gemini_model"])
+        provider = self._gemini_provider(settings)
         has_cached_highlights = bool(project.candidates and project.analysis_revision)
         if not provider.available and not has_cached_highlights:
             raise RuntimeError("Gemini isn't configured yet. Add GEMINI_API_KEY and try again.")
-        pipeline = CorePipeline(workspace, FFmpegService(), FasterWhisperTranscriber(settings["whisper_model"]), provider, prompt_version="phase2a1-v1")
+        pipeline = CorePipeline(workspace, FFmpegService(), self._transcriber(settings["whisper_model"]), provider, prompt_version="phase2a1-v1")
         transcript, source = project.transcripts[-1], project.sources[0]
         if has_cached_highlights:
             update(0.08, "Reusing cached full-source analysis", True)
@@ -1041,8 +1144,9 @@ class DesktopService:
                     run = next(item for item in project.production_runs if item.id == run_id)
                     run.edit_states[sequence.id] = {"state": "preview_ready", "stage": "Preview ready", "error": None}
                 except Exception as exc:
-                    run.edit_states[sequence.id] = {"state": "failed", "stage": "Preview failed", "error": str(exc)}
-                    run.errors.append(f"{sequence.id}: {exc}")
+                    safe_error = sanitize_diagnostic_text(str(exc))
+                    run.edit_states[sequence.id] = {"state": "failed", "stage": "Preview failed", "error": safe_error}
+                    run.errors.append(f"{sequence.id}: {safe_error}")
                 save_project(workspace, project)
         run.status = "review"
         save_project(workspace, project)
@@ -1074,8 +1178,9 @@ class DesktopService:
                 run = next(item for item in project.production_runs if item.id == run_id)
                 run.edit_states[edit_id] = {"state": "preview_ready" if preview else "rendered", "stage": "Completed", "error": None}
             except Exception as exc:
-                run.edit_states[edit_id] = {"state": "failed", "stage": "Failed", "error": str(exc)}
-                run.errors.append(f"{edit_id}: {exc}")
+                safe_error = sanitize_diagnostic_text(str(exc))
+                run.edit_states[edit_id] = {"state": "failed", "stage": "Failed", "error": safe_error}
+                run.errors.append(f"{edit_id}: {safe_error}")
             save_project(workspace, project)
         run.status = "completed" if all(item.get("state") != "rendering" for item in run.edit_states.values()) else "review"
         save_project(workspace, project)
@@ -1089,7 +1194,10 @@ class DesktopService:
         profile = WorkflowProfile(**run.workflow_profile_snapshot)
         campaign = CampaignProfile(**run.campaign_profile_snapshot) if run.campaign_profile_snapshot else None
         package_stem = campaign.name if campaign else f"{project.name}-{run.id}"
-        package_root = collision_safe_path(workspace.root / "exports", package_stem, "")
+        final_root = collision_safe_path(workspace.root / "exports", package_stem, "")
+        package_root = final_root.with_name(final_root.name + ".partial")
+        if package_root.exists():
+            shutil.rmtree(package_root)
         videos, captions_dir, timelines_dir, metadata = (package_root / name for name in ("videos", "captions", "timelines", "metadata"))
         for directory in (videos, captions_dir, timelines_dir, metadata):
             directory.mkdir(parents=True, exist_ok=True)
@@ -1097,6 +1205,7 @@ class DesktopService:
         deliverables: list[dict[str, object]] = []
         for index, edit_id in enumerate(edit_ids, 1):
             if event.is_set():
+                shutil.rmtree(package_root, ignore_errors=True)
                 run.status = "cancelled"
                 save_project(workspace, project)
                 return
@@ -1134,7 +1243,8 @@ class DesktopService:
             entry["campaign_validation"] = asdict(validation) if validation else None
             deliverables.append(entry)
         write_manifest(metadata / "manifest.json", run, project.name, deliverables)
-        run.output_package_path = str(package_root)
+        os.replace(package_root, final_root)
+        run.output_package_path = str(final_root)
         run.status = "completed"
         save_project(workspace, project)
         update(.96, f"Output package created with {len(deliverables)} deliverable(s)", False)

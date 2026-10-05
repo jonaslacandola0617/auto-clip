@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { useEffect, useRef, useState } from "react";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 export function VideoPreview({ path, start = 0, end, vertical = false, seekTo, seekKey = 0, onTimeUpdate }: {
   path: string;
@@ -13,6 +13,16 @@ export function VideoPreview({ path, start = 0, end, vertical = false, seekTo, s
   onTimeUpdate?: (seconds: number) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [source, setSource] = useState("");
+
+  useEffect(() => {
+    let current = true;
+    setSource("");
+    invoke<string>("allow_media_path", { path })
+      .then((allowedPath) => { if (current) setSource(convertFileSrc(allowedPath)); })
+      .catch(() => { if (current) setSource(""); });
+    return () => { current = false; };
+  }, [path]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -28,7 +38,7 @@ export function VideoPreview({ path, start = 0, end, vertical = false, seekTo, s
     <video
       ref={videoRef}
       className={vertical ? "video-preview video-preview--vertical" : "video-preview"}
-      src={convertFileSrc(path)}
+      src={source || undefined}
       controls
       preload="metadata"
       onLoadedMetadata={(event) => { event.currentTarget.currentTime = start; }}

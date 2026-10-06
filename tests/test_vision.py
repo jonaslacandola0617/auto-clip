@@ -39,7 +39,18 @@ class VisionTests(unittest.TestCase):
         track = build_reframe_track("r1", timestamps, detections, smoothing_alpha=.5, max_lost_frames=2)
         self.assertLess(track.points[0].crop_x, .8)
         self.assertEqual(track.points[1].subject_x, track.points[0].crop_x)
-        self.assertEqual(track.smoothing["lost_behavior"], "hold_then_ease_to_center")
+        self.assertEqual(track.smoothing["lost_behavior"], "hold_fixed")
+        self.assertEqual({point.crop_x for point in track.points[1:]}, {track.points[0].crop_x})
+
+    def test_weak_or_small_detection_changes_hold_stable_crop(self) -> None:
+        timestamps = [mt(0), mt(1), mt(2)]
+        track = build_reframe_track("r1", timestamps, [None, Detection(timestamps[1], .53, .5, .95), Detection(timestamps[2], .9, .5, .2)])
+        self.assertEqual([point.crop_x for point in track.points], [.5, .5, .5])
+
+    def test_crop_motion_is_velocity_limited(self) -> None:
+        timestamps = [mt(0), mt(1)]
+        track = build_reframe_track("r1", timestamps, [Detection(timestamps[0], .95, .5, 1), Detection(timestamps[1], .05, .5, 1)], smoothing_alpha=1, max_velocity_per_second=.1)
+        self.assertLessEqual(abs(track.points[1].crop_x - track.points[0].crop_x), .100001)
 
     def test_manual_fixed_crop_override(self) -> None:
         override = ManualCropOverride(True, .2, .4, 1.2)

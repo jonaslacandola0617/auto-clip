@@ -16,3 +16,8 @@ __pycache__/
 vite.config.js
 vite.config.d.ts
 src-tauri/gen/
+src-tauri/resources/runtime/worker/*
+!src-tauri/resources/runtime/worker/.gitkeep
+release-fixtures/
+release-output/
+release-validation/

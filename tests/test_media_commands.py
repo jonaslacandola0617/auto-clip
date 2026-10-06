@@ -25,6 +25,7 @@ class MediaCommandTests(unittest.TestCase):
             self.assertIn(Path(args[0]).name.lower(), {"ffmpeg", "ffmpeg.exe"})
             self.assertIn("pcm_s16le", args)
             self.assertEqual(args[args.index("-i") + 1], "source.mp4")
+            self.assertTrue(args[-1].endswith("audio.partial.wav"))
             self.assertTrue(output.exists())
 
     def test_project_local_static_ffmpeg_is_discovered_when_installed(self) -> None:

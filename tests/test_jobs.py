@@ -60,7 +60,7 @@ class JobTests(unittest.TestCase):
             job = manager.start("cooperative", runner)
             self.assertTrue(started.wait(1))
             cancelling = manager.cancel(job.id)
-            self.assertEqual(cancelling.state, "running")
+            self.assertEqual(cancelling.state, "cancelling")
             self.assertEqual(wait_for(manager, job.id, {"cancelled"}), "cancelled")
 
     def test_non_cancellable_stage_rejects_cancellation(self) -> None:

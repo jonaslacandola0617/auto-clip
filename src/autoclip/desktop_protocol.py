@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .version import WORKER_PROTOCOL_VERSION
 
-PROTOCOL_VERSION = "1"
+
+PROTOCOL_VERSION = WORKER_PROTOCOL_VERSION
 COMMANDS = {
     "doctor",
     "create_project",
@@ -27,6 +29,17 @@ COMMANDS = {
     "delete_clip",
     "select_clip",
     "update_edit_sequence",
+    "update_visual_plan",
+    "update_enhancement_plan",
+    "save_workflow_profile",
+    "save_campaign_profile",
+    "create_production_run",
+    "update_production_run",
+    "bulk_production_action",
+    "set_gemini_api_key",
+    "clear_gemini_api_key",
+    "clear_cache",
+    "export_diagnostics",
 }
 
 

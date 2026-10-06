@@ -106,7 +106,7 @@ class CorePipeline:
 
     def construct_story_concepts(self, moments: list[Moment], transcript: Transcript, *, preset: str = "default") -> list[StoryConcept]:
         identity = [{"id": item.id, "summary": item.summary, "types": item.types, "topics": item.topic_ids, "entities": item.entities, "start": float(item.source_in.seconds), "end": float(item.source_out.seconds)} for item in moments]
-        key = self.workspace.cache_key("stories", {"transcript_revision": transcript.revision_id, "moments": identity, "prompt": "stories-phase2a-v1", "provider": type(self.provider).__name__, "model": getattr(self.provider, "model", "fixture"), "preset": preset})
+        key = self.workspace.cache_key("stories", {"transcript_revision": transcript.revision_id, "moments": identity, "prompt": "stories-phase2a1-v1", "provider": type(self.provider).__name__, "model": getattr(self.provider, "model", "fixture"), "preset": preset})
         path = self.workspace.root / "analysis" / f"stories-{key}.json"
         raw = json.loads(path.read_text(encoding="utf-8"))["stories"] if path.exists() else self.provider.construct_stories(identity, {"target_duration_seconds": [25, 60], "segment_count": [2, 6], "preset": preset})
         stories = [StoryConcept(
@@ -114,6 +114,9 @@ class CorePipeline:
             development=item["development"], payoff=item["payoff"], moment_ids=list(dict.fromkeys(item["moment_ids"])),
             target_duration_seconds=float(item["target_duration_seconds"]), explanation=item["explanation"], coherence=dict(item.get("coherence", {})),
             integrity_considerations=list(item.get("integrity_considerations", [])),
+            central_topic=str(item.get("central_topic", "")), viewer_premise=str(item.get("viewer_premise", item.get("premise", ""))),
+            moment_rationales={str(key): str(value) for key, value in item.get("moment_rationales", {}).items()},
+            understandable_without_source=bool(item.get("understandable_without_source", False)),
         ) for index, item in enumerate(raw) if len(set(item.get("moment_ids", []))) >= 2]
         if not path.exists():
             atomic_write_json(path, {"stories": [{**item, "id": story.id} for item, story in zip(raw, stories)]})

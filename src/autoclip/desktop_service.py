@@ -7,6 +7,7 @@ import re
 import shutil
 import sys
 import threading
+import zipfile
 from fractions import Fraction
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -15,21 +16,30 @@ from typing import Any
 
 from .ai import GeminiProvider
 from .captions import CAPTION_PRESETS, build_caption_track, build_edit_sequence_caption_track, export_ass, export_edit_sequence_ass, export_srt
+from .credentials import CredentialStore
+from .enhancements import plan_enhancements, relink_asset, serialize_graphics_ass, validate_enhancement_plan
 from .desktop_protocol import ProtocolError
 from .exporters.otio import export_otio
 from .exporters.premiere_xml import export_premiere_xml
 from .jobs import JobManager
 from .media import FFmpegService, media_source_from_probe
 from .models import (
-    ApprovedClip, AutoClipProject, EditSequence, ManualCropOverride, MediaSource, OutputArtifact,
-    ProjectClip, Timeline,
+    ApprovedClip, AutoClipProject, CampaignProfile, EditSequence, ManualCropOverride, MediaSource,
+    OutputArtifact, ProductionRun, ProjectClip, Timeline, VisualEditPlan, WorkflowProfile,
 )
-from .intelligent_edit import construct_story_concepts_locally, moments_from_candidates, plan_sequence, reflow_sequence, validate_integrity
+from .production import (
+    apply_profile_policy, collision_safe_path, production_summary, render_filename,
+    select_diverse_edits, validate_campaign_edit, validate_campaign_profile,
+    validate_workflow_profile, write_manifest,
+)
+from .intelligent_edit import construct_candidate_stories, plan_reviewed_sequence, reflow_sequence, review_editorial_quality, validate_integrity
 from .pipeline import CorePipeline
+from .release import MODEL_APPROX_BYTES, ReleasePaths, require_free_space, sanitize_diagnostic_text
 from .storage import Workspace, atomic_write_json, load_project, save_project
 from .time import MediaTime
 from .transcription import FasterWhisperTranscriber, TranscriptionCancelled
-from .vision import analyze_video_clip, crop_geometry
+from .vision import DETECTOR_CONFIG, DETECTOR_VERSION, MediaPipeFaceDetector, analyze_video_clip, analyze_visual_observations, build_visual_edit_plan, crop_geometry
+from .version import APP_VERSION
 
 
 def _now() -> str:
@@ -65,9 +75,12 @@ class DesktopService:
         default_root = Path(os.environ.get("LOCALAPPDATA", Path.cwd())) / "AutoClip"
         self.state_root = (state_root or Path(os.environ.get("AUTOCLIP_APP_DATA", default_root))).resolve()
         self.project_root = (project_root or Path(__file__).resolve().parents[2]).resolve()
-        self.state_root.mkdir(parents=True, exist_ok=True)
+        self.paths = ReleasePaths(self.state_root)
+        self.paths.ensure()
         self.recents_path = self.state_root / "recent-projects.json"
         self.settings_path = self.state_root / "settings.json"
+        self.profile_library_path = self.state_root / "profiles.json"
+        self.credentials = CredentialStore(self.state_root / "credentials" / "gemini.dpapi")
         self.jobs = JobManager(self.state_root / "jobs.json")
         _development_api_key(self.project_root)
 
@@ -94,24 +107,68 @@ class DesktopService:
             "delete_clip": self.delete_clip,
             "select_clip": self.select_clip,
             "update_edit_sequence": self.update_edit_sequence,
+            "update_visual_plan": self.update_visual_plan,
+            "update_enhancement_plan": self.update_enhancement_plan,
+            "save_workflow_profile": self.save_workflow_profile,
+            "save_campaign_profile": self.save_campaign_profile,
+            "create_production_run": self.create_production_run,
+            "update_production_run": self.update_production_run,
+            "bulk_production_action": self.bulk_production_action,
+            "set_gemini_api_key": self.set_gemini_api_key,
+            "clear_gemini_api_key": self.clear_gemini_api_key,
+            "clear_cache": self.clear_cache,
+            "export_diagnostics": self.export_diagnostics,
         }
         return handlers[command](payload)
 
+    def _gemini_api_key(self) -> str | None:
+        development = os.environ.get("GEMINI_API_KEY")
+        if development:
+            return development
+        try:
+            return self.credentials.get_gemini_key()
+        except (OSError, RuntimeError):
+            return None
+
+    def _gemini_provider(self, settings: dict[str, Any]) -> GeminiProvider:
+        return GeminiProvider(model=settings["gemini_model"], api_key=self._gemini_api_key())
+
+    def _transcriber(self, model: str) -> FasterWhisperTranscriber:
+        return FasterWhisperTranscriber(model, device="cpu", compute_type="int8", model_cache=self.paths.models)
+
     def doctor(self, _payload: dict[str, Any] | None = None) -> dict[str, Any]:
         media = FFmpegService()
-        whisper_ready = FasterWhisperTranscriber().available
-        gemini_ready = _development_api_key(self.project_root)
+        settings = self.get_settings()
+        transcriber = self._transcriber(settings["whisper_model"])
+        whisper_ready = transcriber.available
+        gemini_ready = bool(self._gemini_api_key())
+        storage_ready = os.access(self.state_root, os.W_OK) and os.access(self.paths.cache, os.W_OK)
+        ffmpeg_version = media.version() if media.available else "unavailable"
+        detector_ready = _module_available("mediapipe") and self._detector_ready()
         return {
-            "ffmpeg": {"ready": media.available, "summary": "Ready" if media.available else "Not available"},
-            "ffprobe": {"ready": media.available, "summary": "Ready" if media.available else "Not available"},
+            "runtime": {"ready": True, "summary": f"Worker {APP_VERSION}"},
+            "storage": {"ready": storage_ready, "summary": "Ready" if storage_ready else "Application storage is not writable"},
+            "ffmpeg": {"ready": media.available, "summary": f"{'Bundled' if media.bundled else 'Development'} FFmpeg {ffmpeg_version}" if media.available else "Bundled FFmpeg unavailable"},
+            "ffprobe": {"ready": media.available, "summary": "Bundled ffprobe ready" if media.bundled else "Development ffprobe ready" if media.available else "Bundled ffprobe unavailable"},
             "whisper": {"ready": whisper_ready, "summary": "Ready - CPU processing" if whisper_ready else "Not available"},
+            "model": {"ready": transcriber.model_is_cached, "summary": f"{settings['whisper_model'].title()} model ready" if transcriber.model_is_cached else f"{settings['whisper_model'].title()} model downloads on first transcription (~{MODEL_APPROX_BYTES[settings['whisper_model']] // (1024 * 1024)} MB)"},
             "opencv": {"ready": _module_available("cv2"), "summary": "Ready" if _module_available("cv2") else "Not available"},
-            "mediapipe": {"ready": _module_available("mediapipe"), "summary": "Ready" if _module_available("mediapipe") else "Not available"},
-            "otio": {"ready": _module_available("opentimelineio"), "summary": "Ready" if _module_available("opentimelineio") else "Not available"},
+            "mediapipe": {"ready": detector_ready, "summary": "Ready - packaged offline detector" if detector_ready else "Not available - stable framing fallback enabled"},
+            "otio": {"ready": True, "summary": "Ready - built-in OTIO export"},
             "gemini": {"ready": gemini_ready, "summary": "Configured" if gemini_ready else "API key not configured"},
             "acceleration": {"ready": False, "summary": "Not available - CPU processing will be used"},
             "python": sys.version.split()[0],
+            "app_version": APP_VERSION,
+            "paths": {"data": str(self.state_root), "cache": str(self.paths.cache), "models": str(self.paths.models), "logs": str(self.paths.logs)},
         }
+
+    def _detector_ready(self) -> bool:
+        try:
+            detector = MediaPipeFaceDetector()
+            detector.close()
+            return True
+        except Exception:
+            return False
 
     def _project_file(self, value: str) -> Path:
         path = Path(value).expanduser().resolve()
@@ -138,7 +195,7 @@ class DesktopService:
         try:
             return media_source_from_probe(source_id, path, media.inspect(path))
         except Exception as exc:
-            raise ProtocolError("media_unreadable", "We couldn't read this video. Choose another file or check that the file isn't damaged.", details=str(exc)) from exc
+            raise ProtocolError("media_unreadable", "We couldn't read this video. Choose another file or check that the file isn't damaged.", details=sanitize_diagnostic_text(str(exc))) from exc
 
     def _safe_project_directory(self, location: Path, name: str) -> Path:
         cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", name).strip().rstrip(".")
@@ -241,12 +298,21 @@ class DesktopService:
             "render_path": clip.render_path, "revision": clip.revision,
         }
 
-    def _edit_sequence_summary(self, sequence: EditSequence) -> dict[str, Any]:
+    def _edit_sequence_summary(self, sequence: EditSequence, project: AutoClipProject | None = None) -> dict[str, Any]:
+        plan = next((item for item in (project.visual_edit_plans if project else []) if item.sequence_id == sequence.id), None)
+        enhancement = next((item for item in (project.enhancement_plans if project else []) if item.sequence_id == sequence.id), None)
         return {
             "id": sequence.id, "story_concept_id": sequence.story_concept_id, "title": sequence.title,
             "duration_seconds": sequence.duration_seconds, "segment_count": len(sequence.segments),
             "integrity": asdict(sequence.integrity), "status": sequence.status, "revision": sequence.revision,
+            "editorial_review": asdict(sequence.editorial_review) if sequence.editorial_review else None,
             "preview_path": sequence.preview_path, "render_path": sequence.render_path,
+            "visual_plan": ({"id": plan.id, "revision": plan.revision, "framing_mode": plan.framing_mode,
+                             "visual_emphasis": plan.visual_emphasis, "caption_preset": plan.caption_preset,
+                             "caption_position": plan.caption_position, "warnings": plan.warnings,
+                             "actions": [asdict(action) for action in plan.visual_actions],
+                             "layouts": [asdict(layout) for layout in plan.caption_layout]} if plan else None),
+            "enhancement_plan": (asdict(enhancement) if enhancement else None),
             "segments": [{
                 "id": segment.id, "moment_id": segment.moment_id, "source_id": segment.source_id,
                 "source_in": float(segment.source_in.seconds), "source_out": float(segment.source_out.seconds),
@@ -257,6 +323,11 @@ class DesktopService:
         }
 
     def _state(self, workspace: Workspace, project: AutoClipProject) -> dict[str, Any]:
+        library_workflows, library_campaigns = self._read_profile_library()
+        workflows = {item.id: item for item in library_workflows}
+        workflows.update({item.id: item for item in project.workflow_profiles})
+        campaigns = {item.id: item for item in library_campaigns}
+        campaigns.update({item.id: item for item in project.campaign_profiles})
         source = self._source_summary(project.sources[0], workspace) if project.sources else None
         if source is None:
             status = "needs_source"
@@ -278,7 +349,10 @@ class DesktopService:
             "outputs": [asdict(output) for output in project.outputs],
             "moment_count": len(project.moments),
             "story_concepts": [asdict(story) for story in project.story_concepts],
-            "edit_sequences": [self._edit_sequence_summary(sequence) for sequence in project.edit_sequences],
+            "edit_sequences": [self._edit_sequence_summary(sequence, project) for sequence in project.edit_sequences],
+            "workflow_profiles": [asdict(profile) for profile in workflows.values()],
+            "campaign_profiles": [asdict(profile) for profile in campaigns.values()],
+            "production_runs": [{**asdict(run), "summary": production_summary(run)} for run in project.production_runs],
             "analysis_revision": project.analysis_revision,
         }
 
@@ -290,23 +364,20 @@ class DesktopService:
         workspace, project = self._load_project(str(payload.get("project_path", "")))
         source_id = project.sources[0].id if project.sources else "media_001"
         replacement = self._inspect_source(Path(str(payload.get("source_path", ""))), source_id)
-        source_changed = not project.sources or project.sources[0].fingerprint != replacement.fingerprint
+        if project.sources:
+            previous = project.sources[0].fingerprint
+            current = replacement.fingerprint
+            same_media = previous.get("size") == current.get("size") and previous.get("partial_sha256") == current.get("partial_sha256")
+            if not same_media:
+                raise ProtocolError(
+                    "source_fingerprint_mismatch",
+                    "This file does not match the project's original source. Choose the moved original video instead.",
+                    details="The file size or media fingerprint is different; no project data was changed.",
+                )
         if project.sources:
             project.sources[0] = replacement
         else:
             project.sources.append(replacement)
-        if source_changed:
-            project.transcripts.clear()
-            project.candidates.clear()
-            project.clips.clear()
-            project.timelines.clear()
-            project.reframe_tracks.clear()
-            project.caption_tracks.clear()
-            project.outputs.clear()
-            project.moments.clear()
-            project.story_concepts.clear()
-            project.edit_sequences.clear()
-            project.analysis_revision = None
         save_project(workspace, project)
         return self._state(workspace, project)
 
@@ -330,6 +401,9 @@ class DesktopService:
         project.moments.clear()
         project.story_concepts.clear()
         project.edit_sequences.clear()
+        project.visual_edit_plans.clear()
+        project.enhancement_plans.clear()
+        project.production_runs.clear()
         project.analysis_revision = None
         project.clips = [clip for clip in project.clips if clip.source != "ai"]
         project.caption_tracks.clear()
@@ -515,8 +589,250 @@ class DesktopService:
         else:
             raise ProtocolError("unsupported_edit_operation", "That Smart Edit change isn't supported.")
         reflow_sequence(sequence)
-        sequence.integrity = validate_integrity(sequence, project.transcripts[-1], {item.id: item for item in project.moments})
-        sequence.status = "ready_to_preview" if len(sequence.segments) >= 2 and sequence.integrity.status == "passed" else "review_required"
+        moment_map = {item.id: item for item in project.moments}
+        story = next((item for item in project.story_concepts if item.id == sequence.story_concept_id), None)
+        sequence.integrity = validate_integrity(sequence, project.transcripts[-1], moment_map, allow_truthful_hook_reorder=bool(story and story.coherence.get("allow_truthful_hook_reorder")))
+        sequence.editorial_review = review_editorial_quality(story, sequence, moment_map) if story else None
+        sequence.status = "ready" if len(sequence.segments) >= 2 and sequence.integrity.status == "passed" and sequence.editorial_review and sequence.editorial_review.accepted else "needs_revision"
+        if story:
+            story.status = sequence.status
+            story.understandable_without_source = bool(sequence.editorial_review and sequence.editorial_review.self_contained)
+        project.visual_edit_plans = [item for item in project.visual_edit_plans if item.sequence_id != sequence.id]
+        project.enhancement_plans = [item for item in project.enhancement_plans if item.sequence_id != sequence.id]
+        sequence.preview_path = None
+        sequence.render_path = None
+        save_project(workspace, project)
+        return self._state(workspace, project)
+
+    def update_visual_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
+        workspace, project = self._load_project(str(payload.get("project_path", "")))
+        sequence_id = str(payload.get("edit_sequence_id", ""))
+        sequence = next((item for item in project.edit_sequences if item.id == sequence_id), None)
+        plan = next((item for item in project.visual_edit_plans if item.sequence_id == sequence_id), None)
+        if sequence is None:
+            raise ProtocolError("edit_sequence_not_found", "We couldn't find that Smart Edit.")
+        if plan is None:
+            plan = build_visual_edit_plan(sequence, [])
+            project.visual_edit_plans.append(plan)
+        operation = str(payload.get("operation", "settings"))
+        if operation == "toggle_action":
+            action = next((item for item in plan.visual_actions if item.id == str(payload.get("action_id", ""))), None)
+            if action is None:
+                raise ProtocolError("visual_action_not_found", "We couldn't find that visual action.")
+            action.enabled = bool(payload.get("enabled", True))
+            action.revision += 1
+            rebuilt = build_visual_edit_plan(sequence, plan.observations, previous=plan, framing_mode=plan.framing_mode,
+                                             visual_emphasis=plan.visual_emphasis, caption_preset=plan.caption_preset,
+                                             caption_position=plan.caption_position)
+            project.visual_edit_plans = [item for item in project.visual_edit_plans if item.sequence_id != sequence_id] + [rebuilt]
+        elif operation == "settings":
+            framing = str(payload.get("framing_mode", plan.framing_mode))
+            emphasis = str(payload.get("visual_emphasis", plan.visual_emphasis))
+            preset = str(payload.get("caption_preset", plan.caption_preset))
+            position = str(payload.get("caption_position", plan.caption_position))
+            if framing not in {"auto", "fixed"} or emphasis not in {"automatic", "off"} or preset not in CAPTION_PRESETS or position not in {"auto", "upper", "center", "lower"}:
+                raise ProtocolError("invalid_visual_settings", "Choose supported framing, emphasis, and caption settings.")
+            rebuilt = build_visual_edit_plan(sequence, plan.observations, previous=plan, framing_mode=framing, visual_emphasis=emphasis, caption_preset=preset, caption_position=position)
+            project.visual_edit_plans = [item for item in project.visual_edit_plans if item.sequence_id != sequence_id] + [rebuilt]
+        else:
+            raise ProtocolError("unsupported_visual_operation", "That visual treatment change isn't supported.")
+        current_visual = next(item for item in project.visual_edit_plans if item.sequence_id == sequence_id)
+        for enhancement in project.enhancement_plans:
+            if enhancement.sequence_id == sequence_id:
+                enhancement.visual_plan_revision = current_visual.revision
+                enhancement.revision += 1
+        sequence.preview_path = None
+        sequence.render_path = None
+        save_project(workspace, project)
+        return self._state(workspace, project)
+
+    def update_enhancement_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
+        workspace, project = self._load_project(str(payload.get("project_path", "")))
+        sequence_id = str(payload.get("edit_sequence_id", ""))
+        sequence = next((item for item in project.edit_sequences if item.id == sequence_id), None)
+        plan = next((item for item in project.enhancement_plans if item.sequence_id == sequence_id), None)
+        if sequence is None or plan is None:
+            raise ProtocolError("enhancement_plan_not_found", "Plan enhancements before changing them.")
+        operation = str(payload.get("operation", ""))
+        if operation == "toggle":
+            item_id = str(payload.get("item_id", ""))
+            item = next((item for item in [*plan.broll_items, *plan.graphic_items, *plan.sound_cues] if item.id == item_id), None)
+            if item is None and plan.music_track and item_id == "music":
+                item = plan.music_track
+            if item is None:
+                raise ProtocolError("enhancement_not_found", "We couldn't find that enhancement.")
+            item.enabled = bool(payload.get("enabled", True))
+            plan.user_overrides[item_id] = {"enabled": item.enabled}
+            plan.revision += 1
+        elif operation == "relink_asset":
+            try:
+                relink_asset(plan, str(payload.get("asset_id", "")), Path(str(payload.get("reference", ""))))
+            except ValueError as exc:
+                raise ProtocolError("enhancement_asset_unavailable", str(exc)) from exc
+        else:
+            raise ProtocolError("unsupported_enhancement_operation", "That enhancement change isn't supported.")
+        validate_enhancement_plan(plan, sequence)
+        sequence.preview_path = None
+        sequence.render_path = None
+        save_project(workspace, project)
+        return self._state(workspace, project)
+
+    def _read_profile_library(self) -> tuple[list[WorkflowProfile], list[CampaignProfile]]:
+        if not self.profile_library_path.exists():
+            return [], []
+        raw = json.loads(self.profile_library_path.read_text(encoding="utf-8"))
+        return ([WorkflowProfile(**item) for item in raw.get("workflow_profiles", [])],
+                [CampaignProfile(**item) for item in raw.get("campaign_profiles", [])])
+
+    def _save_profile_library(self, workflows: list[WorkflowProfile], campaigns: list[CampaignProfile]) -> None:
+        atomic_write_json(self.profile_library_path, {"workflow_profiles": [asdict(item) for item in workflows], "campaign_profiles": [asdict(item) for item in campaigns]})
+
+    def save_workflow_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+        workspace, project = self._load_project(str(payload.get("project_path", "")))
+        profile_id = str(payload.get("id") or f"workflow_{int(datetime.now(UTC).timestamp() * 1000)}")
+        existing = next((item for item in project.workflow_profiles if item.id == profile_id), None)
+        profile = WorkflowProfile(
+            id=profile_id, name=str(payload.get("name", existing.name if existing else "Fast Shorts")),
+            revision=(existing.revision + 1 if existing else 1),
+            generation_mode=str(payload.get("generation_mode", existing.generation_mode if existing else "concepts_only")),
+            target_platform=str(payload.get("target_platform", existing.target_platform if existing else "shorts")),
+            min_duration_seconds=float(payload.get("min_duration_seconds", existing.min_duration_seconds if existing else 15)),
+            max_duration_seconds=float(payload.get("max_duration_seconds", existing.max_duration_seconds if existing else 45)),
+            desired_output_count=int(payload.get("desired_output_count", existing.desired_output_count if existing else 3)),
+            pacing=str(payload.get("pacing", existing.pacing if existing else "fast")),
+            hook_priority=str(payload.get("hook_priority", existing.hook_priority if existing else "strong")),
+            story_style=str(payload.get("story_style", existing.story_style if existing else "self-contained")),
+            framing=str(payload.get("framing", existing.framing if existing else "automatic")),
+            visual_emphasis=str(payload.get("visual_emphasis", existing.visual_emphasis if existing else "restrained")),
+            caption_preset=str(payload.get("caption_preset", existing.caption_preset if existing else "word_highlight")),
+            enhancement_policy=str(payload.get("enhancement_policy", existing.enhancement_policy if existing else "restrained")),
+            music_policy=str(payload.get("music_policy", existing.music_policy if existing else "off")),
+            export_defaults=list(payload.get("export_defaults", existing.export_defaults if existing else ["mp4", "srt", "otio"])),
+            campaign_profile_id=(str(payload["campaign_profile_id"]) if payload.get("campaign_profile_id") else None),
+        )
+        try:
+            validate_workflow_profile(profile)
+        except ValueError as exc:
+            raise ProtocolError("invalid_workflow_profile", str(exc)) from exc
+        project.workflow_profiles = [item for item in project.workflow_profiles if item.id != profile.id] + [profile]
+        library_workflows, library_campaigns = self._read_profile_library()
+        library_workflows = [item for item in library_workflows if item.id != profile.id] + [profile]
+        self._save_profile_library(library_workflows, library_campaigns)
+        save_project(workspace, project)
+        return self._state(workspace, project)
+
+    def save_campaign_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+        workspace, project = self._load_project(str(payload.get("project_path", "")))
+        profile_id = str(payload.get("id") or f"campaign_{int(datetime.now(UTC).timestamp() * 1000)}")
+        existing = next((item for item in project.campaign_profiles if item.id == profile_id), None)
+        profile = CampaignProfile(
+            id=profile_id, name=str(payload.get("name", existing.name if existing else "Campaign Delivery")),
+            revision=(existing.revision + 1 if existing else 1), creator=str(payload.get("creator", existing.creator if existing else "")),
+            target_platform=str(payload.get("target_platform", existing.target_platform if existing else "shorts")),
+            min_duration_seconds=float(payload.get("min_duration_seconds", existing.min_duration_seconds if existing else 0)),
+            max_duration_seconds=float(payload.get("max_duration_seconds", existing.max_duration_seconds if existing else 60)),
+            required_handle=str(payload.get("required_handle", existing.required_handle if existing else "")),
+            required_cta=str(payload.get("required_cta", existing.required_cta if existing else "")),
+            required_text=list(payload.get("required_text", existing.required_text if existing else [])),
+            hashtags=list(payload.get("hashtags", existing.hashtags if existing else [])),
+            watermark_required=bool(payload.get("watermark_required", existing.watermark_required if existing else False)),
+            forbidden_terms=list(payload.get("forbidden_terms", existing.forbidden_terms if existing else [])),
+            content_notes=str(payload.get("content_notes", existing.content_notes if existing else "")),
+            target_deliverables=int(payload.get("target_deliverables", existing.target_deliverables if existing else 1)),
+            export_naming=str(payload.get("export_naming", existing.export_naming if existing else "{campaign}-{index}-{title}")),
+        )
+        try:
+            validate_campaign_profile(profile)
+        except ValueError as exc:
+            raise ProtocolError("invalid_campaign_profile", str(exc)) from exc
+        project.campaign_profiles = [item for item in project.campaign_profiles if item.id != profile.id] + [profile]
+        library_workflows, library_campaigns = self._read_profile_library()
+        library_campaigns = [item for item in library_campaigns if item.id != profile.id] + [profile]
+        self._save_profile_library(library_workflows, library_campaigns)
+        save_project(workspace, project)
+        return self._state(workspace, project)
+
+    def create_production_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        workspace, project = self._load_project(str(payload.get("project_path", "")))
+        library_workflows, library_campaigns = self._read_profile_library()
+        profile = next((item for item in [*project.workflow_profiles, *library_workflows] if item.id == str(payload.get("workflow_profile_id", ""))), None)
+        if profile is None:
+            raise ProtocolError("workflow_profile_not_found", "Choose a workflow profile before starting production.")
+        campaign = next((item for item in [*project.campaign_profiles, *library_campaigns] if item.id == (str(payload.get("campaign_profile_id")) if payload.get("campaign_profile_id") else profile.campaign_profile_id)), None)
+        if all(item.id != profile.id for item in project.workflow_profiles):
+            project.workflow_profiles.append(profile)
+        if campaign and all(item.id != campaign.id for item in project.campaign_profiles):
+            project.campaign_profiles.append(campaign)
+        run = ProductionRun(
+            id=f"run_{int(datetime.now(UTC).timestamp() * 1000)}", workflow_profile_id=profile.id,
+            workflow_profile_revision=profile.revision, requested_count=int(payload.get("requested_count", profile.desired_output_count)),
+            created_at=_now(), campaign_profile_id=campaign.id if campaign else None,
+            campaign_profile_revision=campaign.revision if campaign else None,
+            workflow_profile_snapshot=asdict(profile), campaign_profile_snapshot=asdict(campaign) if campaign else {}, status="queued",
+        )
+        project.production_runs.append(run)
+        save_project(workspace, project)
+        return self._state(workspace, project)
+
+    def update_production_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        workspace, project = self._load_project(str(payload.get("project_path", "")))
+        run = next((item for item in project.production_runs if item.id == str(payload.get("production_run_id", ""))), None)
+        if run is None:
+            raise ProtocolError("production_run_not_found", "We couldn't find that production run.")
+        edit_ids = [str(item) for item in payload.get("edit_ids", [])]
+        operation = str(payload.get("operation", ""))
+        if operation == "approve":
+            run.accepted_edit_ids = sorted(set(run.accepted_edit_ids) | set(edit_ids))
+            run.rejected_edit_ids = [item for item in run.rejected_edit_ids if item not in edit_ids]
+        elif operation == "reject":
+            run.rejected_edit_ids = sorted(set(run.rejected_edit_ids) | set(edit_ids))
+            run.accepted_edit_ids = [item for item in run.accepted_edit_ids if item not in edit_ids]
+        elif operation == "select":
+            run.selected_edit_ids = edit_ids
+        else:
+            raise ProtocolError("unsupported_production_operation", "That production-run change isn't supported.")
+        campaign = next((item for item in project.campaign_profiles if item.id == run.campaign_profile_id), None)
+        if campaign:
+            for edit_id in run.accepted_edit_ids:
+                sequence = next((item for item in project.edit_sequences if item.id == edit_id), None)
+                enhancement = next((item for item in project.enhancement_plans if item.sequence_id == edit_id), None)
+                if sequence:
+                    run.campaign_validations[edit_id] = validate_campaign_edit(sequence, campaign, enhancement)
+        save_project(workspace, project)
+        return self._state(workspace, project)
+
+    def bulk_production_action(self, payload: dict[str, Any]) -> dict[str, Any]:
+        workspace, project = self._load_project(str(payload.get("project_path", "")))
+        run = next((item for item in project.production_runs if item.id == str(payload.get("production_run_id", ""))), None)
+        if run is None:
+            raise ProtocolError("production_run_not_found", "We couldn't find that production run.")
+        edit_ids = [str(item) for item in payload.get("edit_ids", run.selected_edit_ids)]
+        operation = str(payload.get("operation", ""))
+        if operation in {"approve", "reject"}:
+            return self.update_production_run({**payload, "edit_ids": edit_ids})
+        if operation == "caption_preset":
+            preset = str(payload.get("caption_preset", "word_highlight"))
+            if preset not in CAPTION_PRESETS:
+                raise ProtocolError("invalid_caption_preset", "Choose a supported caption preset.")
+            for visual in project.visual_edit_plans:
+                if visual.sequence_id in edit_ids:
+                    visual.caption_preset = preset
+                    visual.revision += 1
+        elif operation == "enhancement_policy":
+            policy = str(payload.get("enhancement_policy", "restrained"))
+            for enhancement in project.enhancement_plans:
+                if enhancement.sequence_id in edit_ids and policy == "off":
+                    for item in [*enhancement.broll_items, *enhancement.graphic_items, *enhancement.sound_cues]:
+                        item.enabled = False
+                    if enhancement.music_track:
+                        enhancement.music_track.enabled = False
+                    enhancement.revision += 1
+        else:
+            raise ProtocolError("unsupported_bulk_operation", "That bulk change isn't supported.")
+        for sequence in project.edit_sequences:
+            if sequence.id in edit_ids:
+                sequence.preview_path = None
+                sequence.render_path = None
         save_project(workspace, project)
         return self._state(workspace, project)
 
@@ -559,7 +875,7 @@ class DesktopService:
             settings.update(json.loads(self.settings_path.read_text(encoding="utf-8")))
         if settings["gemini_model"] == "gemini-2.5-flash":
             settings["gemini_model"] = "gemini-3.6-flash"
-        settings["gemini_configured"] = _development_api_key(self.project_root)
+        settings["gemini_configured"] = bool(self._gemini_api_key())
         return settings
 
     def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -576,6 +892,53 @@ class DesktopService:
         atomic_write_json(self.settings_path, settings)
         return self.get_settings()
 
+    def set_gemini_api_key(self, payload: dict[str, Any]) -> dict[str, Any]:
+        value = str(payload.get("api_key", ""))
+        try:
+            self.credentials.set_gemini_key(value)
+        except ValueError as exc:
+            raise ProtocolError("invalid_credential", str(exc)) from exc
+        except (OSError, RuntimeError) as exc:
+            raise ProtocolError("credential_storage_failed", "AutoClip could not store the API key securely for this Windows user.", details=sanitize_diagnostic_text(str(exc))) from exc
+        return {"configured": True}
+
+    def clear_gemini_api_key(self, _payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.credentials.clear_gemini_key()
+        os.environ.pop("GEMINI_API_KEY", None)
+        return {"configured": False}
+
+    def clear_cache(self, payload: dict[str, Any]) -> dict[str, Any]:
+        project_value = str(payload.get("project_path", "")).strip()
+        removed = 0
+        targets = [self.paths.cache]
+        if project_value:
+            workspace, _project = self._load_project(project_value)
+            targets.append(workspace.root / "cache")
+        for target in targets:
+            resolved = target.resolve()
+            allowed_roots = [self.state_root.resolve()]
+            if project_value:
+                allowed_roots.append(self._project_file(project_value).parent.resolve())
+            if not any(resolved == root / "cache" for root in allowed_roots):
+                raise ProtocolError("unsafe_cache_path", "AutoClip refused to clean an unexpected path.", recoverable=False)
+            if resolved.exists():
+                removed += sum(path.stat().st_size for path in resolved.rglob("*") if path.is_file())
+                shutil.rmtree(resolved)
+            resolved.mkdir(parents=True, exist_ok=True)
+        return {"removed_bytes": removed}
+
+    def export_diagnostics(self, _payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.paths.diagnostics.mkdir(parents=True, exist_ok=True)
+        output = self.paths.diagnostics / f"AutoClip-diagnostics-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+        doctor = self.doctor()
+        doctor["gemini"] = {"ready": doctor["gemini"]["ready"], "summary": "Configured" if doctor["gemini"]["ready"] else "Not configured"}
+        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("system.json", json.dumps(doctor, ensure_ascii=False, indent=2))
+            for log_path in self.paths.logs.glob("*.log"):
+                content = sanitize_diagnostic_text(log_path.read_text(encoding="utf-8", errors="replace"))
+                archive.writestr(f"logs/{log_path.name}", content[-500_000:])
+        return {"path": str(output)}
+
     def start_job(self, payload: dict[str, Any]) -> dict[str, Any]:
         job_type = str(payload.get("type", ""))
         project_path = str(payload.get("project_path", "")) or None
@@ -585,7 +948,7 @@ class DesktopService:
             if not project_path:
                 raise ProtocolError("project_path_required", "Open a project before starting transcription.")
             runner = lambda _id, event, update: self._transcribe_job(project_path, event, update)
-        elif job_type in {"proxy", "analyze", "smart_edit", "reframe", "preview", "render", "smart_preview", "smart_render", "export"}:
+        elif job_type in {"proxy", "analyze", "smart_edit", "visual_analyze", "enhancement_plan", "reframe", "preview", "render", "smart_preview", "smart_render", "export", "production_generate", "batch_preview", "batch_render", "production_package"}:
             if not project_path:
                 raise ProtocolError("project_path_required", "Open a project before starting this job.")
             if job_type == "proxy":
@@ -594,6 +957,10 @@ class DesktopService:
                 runner = lambda _id, event, update: self._analyze_job(project_path, event, update)
             elif job_type == "smart_edit":
                 runner = lambda _id, event, update: self._smart_edit_job(project_path, event, update)
+            elif job_type == "visual_analyze":
+                runner = lambda _id, event, update: self._visual_analyze_job(project_path, str(payload.get("edit_sequence_id", "")), event, update)
+            elif job_type == "enhancement_plan":
+                runner = lambda _id, event, update: self._enhancement_plan_job(project_path, str(payload.get("edit_sequence_id", "")), event, update)
             elif job_type == "reframe":
                 runner = lambda _id, event, update: self._reframe_job(project_path, str(payload.get("clip_id", "")), event, update)
             elif job_type == "preview":
@@ -602,11 +969,43 @@ class DesktopService:
                 runner = lambda _id, event, update: self._render_job(project_path, str(payload.get("clip_id", "")), False, event, update)
             elif job_type in {"smart_preview", "smart_render"}:
                 runner = lambda _id, event, update: self._render_edit_sequence_job(project_path, str(payload.get("edit_sequence_id", "")), job_type == "smart_preview", event, update)
+            elif job_type == "production_generate":
+                runner = lambda _id, event, update: self._production_generate_job(project_path, str(payload.get("production_run_id", "")), event, update)
+            elif job_type in {"batch_preview", "batch_render"}:
+                runner = lambda _id, event, update: self._batch_render_job(project_path, str(payload.get("production_run_id", "")), job_type == "batch_preview", event, update)
+            elif job_type == "production_package":
+                runner = lambda _id, event, update: self._production_package_job(project_path, str(payload.get("production_run_id", "")), event, update)
             else:
                 runner = lambda _id, event, update: self._export_job(project_path, str(payload.get("format", "")), str(payload.get("clip_id", "")) or None, event, update, str(payload.get("edit_sequence_id", "")) or None)
         else:
             raise ProtocolError("unsupported_job", "This processing job is not available yet.")
+        if project_path:
+            self._check_job_disk_space(job_type, project_path, payload)
         return asdict(self.jobs.start(job_type, runner, project_path=project_path, cancellable=True))
+
+    def _check_job_disk_space(self, job_type: str, project_path: str, payload: dict[str, Any]) -> None:
+        workspace, project = self._load_project(project_path)
+        source_size = int(project.sources[0].fingerprint.get("size", 0)) if project.sources else 0
+        if job_type == "transcribe":
+            settings = self.get_settings()
+            transcriber = self._transcriber(settings["whisper_model"])
+            if not transcriber.model_is_cached:
+                require_free_space(self.paths.models, MODEL_APPROX_BYTES[settings["whisper_model"]] + 256 * 1024 * 1024, "Transcription model download")
+            audio_estimate = 256 * 1024 * 1024
+            if project.sources:
+                audio_estimate = max(audio_estimate, int(float(project.sources[0].duration.seconds) * 32_000 * 1.25))
+            require_free_space(workspace.root, audio_estimate, "Transcription preparation")
+        elif job_type in {"proxy", "preview", "smart_preview"}:
+            require_free_space(workspace.root, max(512 * 1024 * 1024, source_size // 3), "Preview generation")
+        elif job_type in {"render", "smart_render"}:
+            require_free_space(workspace.root / "exports", max(1024 * 1024 * 1024, source_size // 2), "Final render")
+        elif job_type == "batch_render":
+            run_id = str(payload.get("production_run_id", ""))
+            run = next((item for item in project.production_runs if item.id == run_id), None)
+            count = len(run.selected_edit_ids or run.accepted_edit_ids) if run else 1
+            require_free_space(workspace.root / "exports", max(1024 * 1024 * 1024, count * 512 * 1024 * 1024), "Batch render")
+        elif job_type == "production_package":
+            require_free_space(workspace.root / "exports", max(512 * 1024 * 1024, source_size // 4), "Production package")
 
     def _doctor_job(self, event: threading.Event, update: Any) -> None:
         update(0.25, "Checking processing capabilities", True)
@@ -628,8 +1027,8 @@ class DesktopService:
         settings = self.get_settings()
         pipeline = CorePipeline(
             workspace, FFmpegService(),
-            FasterWhisperTranscriber(settings["whisper_model"], device="cpu", compute_type="int8"),
-            GeminiProvider(model=settings["gemini_model"]),
+            self._transcriber(settings["whisper_model"]),
+            self._gemini_provider(settings),
         )
         try:
             transcript = pipeline.transcribe_source(
@@ -650,14 +1049,14 @@ class DesktopService:
         if not project.sources or not project.transcripts:
             raise RuntimeError("Transcribe the source before analyzing clips.")
         settings = self.get_settings()
-        provider = GeminiProvider(model=settings["gemini_model"])
+        provider = self._gemini_provider(settings)
         if not provider.available:
             raise RuntimeError("Gemini isn't configured yet. Add GEMINI_API_KEY and try again.")
         transcript = project.transcripts[-1]
         update(0.1, "Analyzing transcript", True)
         if event.is_set():
             return
-        pipeline = CorePipeline(workspace, FFmpegService(), FasterWhisperTranscriber(settings["whisper_model"]), provider, prompt_version="phase1b-v1")
+        pipeline = CorePipeline(workspace, FFmpegService(), self._transcriber(settings["whisper_model"]), provider, prompt_version="phase1b-v1")
         update(0.3, "Analyzing transcript sections", False)
         candidates = pipeline.analyze_source(project.sources[0], transcript)
         update(0.85, "Ranking clips", False)
@@ -671,15 +1070,15 @@ class DesktopService:
         if not project.sources or not project.transcripts:
             raise RuntimeError("Transcribe the source before creating Smart Edits.")
         settings = self.get_settings()
-        provider = GeminiProvider(model=settings["gemini_model"])
-        if not provider.available:
+        provider = self._gemini_provider(settings)
+        has_cached_highlights = bool(project.candidates and project.analysis_revision)
+        if not provider.available and not has_cached_highlights:
             raise RuntimeError("Gemini isn't configured yet. Add GEMINI_API_KEY and try again.")
-        pipeline = CorePipeline(workspace, FFmpegService(), FasterWhisperTranscriber(settings["whisper_model"]), provider, prompt_version="phase2a-v1")
+        pipeline = CorePipeline(workspace, FFmpegService(), self._transcriber(settings["whisper_model"]), provider, prompt_version="phase2a1-v1")
         transcript, source = project.transcripts[-1], project.sources[0]
-        if project.candidates and project.analysis_revision:
+        if has_cached_highlights:
             update(0.08, "Reusing cached full-source analysis", True)
-            moments = moments_from_candidates(project.candidates, transcript, source)
-            stories = construct_story_concepts_locally(moments)
+            moments, stories = construct_candidate_stories(project.candidates, transcript, source)
         else:
             update(0.08, "Discovering moments across the transcript", True)
             moments = pipeline.discover_moments(source, transcript)
@@ -687,17 +1086,168 @@ class DesktopService:
         if event.is_set():
             return
         update(0.5, f"Consolidating {len(moments)} moments", True)
-        if not stories and not (project.candidates and project.analysis_revision):
+        if not stories and not has_cached_highlights:
             stories = pipeline.construct_story_concepts(moments, transcript)
         if event.is_set():
             return
         update(0.72, "Planning source-grounded edit sequences", False)
         moment_map = {item.id: item for item in moments}
-        sequences = [plan_sequence(story, moment_map, transcript, source) for story in stories]
+        sequences = [plan_reviewed_sequence(story, moment_map, transcript, source) for story in stories]
         project.moments, project.story_concepts, project.edit_sequences = moments, stories, sequences
-        project.analysis_revision = workspace.cache_key("smart_edit_revision", {"transcript_revision": transcript.revision_id, "moments": [item.id for item in moments], "stories": [item.id for item in stories], "prompt": "phase2a-v1", "model": provider.model})
+        project.visual_edit_plans = []
+        project.enhancement_plans = []
+        project.production_runs = []
+        project.analysis_revision = workspace.cache_key("smart_edit_revision", {"transcript_revision": transcript.revision_id, "moments": [item.id for item in moments], "stories": [item.id for item in stories], "prompt": "phase2a1-v1", "model": provider.model})
         save_project(workspace, project)
-        update(0.96, f"{len(sequences)} Smart Edits ready" if sequences else "No suitable Smart Edits were found", False)
+        ready_count = sum(item.status == "ready" for item in sequences)
+        update(0.96, f"{ready_count} Smart Edits ready" if ready_count else "AutoClip couldn't build a coherent Smart Edit from these moments", False)
+
+    def _production_generate_job(self, project_path: str, run_id: str, event: threading.Event, update: Any) -> None:
+        workspace, project = self._load_project(project_path)
+        run = next((item for item in project.production_runs if item.id == run_id), None)
+        if run is None:
+            raise RuntimeError("The production run is unavailable.")
+        profile = WorkflowProfile(**run.workflow_profile_snapshot)
+        update(.08, "Reusing cached moments and accepted Smart Edits", True)
+        selected, suppressed = select_diverse_edits(project.edit_sequences, {item.id: item for item in project.story_concepts}, profile)
+        run.generated_edit_ids = [item.id for item in selected]
+        run.selected_edit_ids = list(run.generated_edit_ids)
+        run.edit_states = {item.id: {"state": "review", "stage": "Editorial gates passed", "error": None} for item in selected}
+        run.warnings = ([f"{len(suppressed)} near-duplicate edit(s) were suppressed."] if suppressed else [])
+        if len(selected) < run.requested_count:
+            run.warnings.append(f"Requested {run.requested_count}; produced {len(selected)} qualified distinct edit(s).")
+        run.status = "review"
+        campaign = CampaignProfile(**run.campaign_profile_snapshot) if run.campaign_profile_snapshot else None
+        if campaign:
+            for sequence in selected:
+                enhancement = next((item for item in project.enhancement_plans if item.sequence_id == sequence.id), None)
+                run.campaign_validations[sequence.id] = validate_campaign_edit(sequence, campaign, enhancement)
+        save_project(workspace, project)
+        if profile.generation_mode == "prepare_previews":
+            for index, sequence in enumerate(selected):
+                if event.is_set():
+                    run.status = "cancelled"
+                    save_project(workspace, project)
+                    return
+                update(.15 + .75 * index / max(1, len(selected)), f"Preparing preview {index + 1} of {len(selected)}", True)
+                try:
+                    self._visual_analyze_job(project_path, sequence.id, event, lambda *_args: None)
+                    self._enhancement_plan_job(project_path, sequence.id, event, lambda *_args: None)
+                    workspace, project = self._load_project(project_path)
+                    run = next(item for item in project.production_runs if item.id == run_id)
+                    visual = next((item for item in project.visual_edit_plans if item.sequence_id == sequence.id), None)
+                    enhancement = next((item for item in project.enhancement_plans if item.sequence_id == sequence.id), None)
+                    apply_profile_policy(profile, visual, enhancement)
+                    save_project(workspace, project)
+                    self._render_edit_sequence_job(project_path, sequence.id, True, event, lambda *_args: None)
+                    workspace, project = self._load_project(project_path)
+                    run = next(item for item in project.production_runs if item.id == run_id)
+                    run.edit_states[sequence.id] = {"state": "preview_ready", "stage": "Preview ready", "error": None}
+                except Exception as exc:
+                    safe_error = sanitize_diagnostic_text(str(exc))
+                    run.edit_states[sequence.id] = {"state": "failed", "stage": "Preview failed", "error": safe_error}
+                    run.errors.append(f"{sequence.id}: {safe_error}")
+                save_project(workspace, project)
+        run.status = "review"
+        save_project(workspace, project)
+        update(.96, f"{len(selected)} distinct Smart Edit(s) ready for review", False)
+
+    def _batch_render_job(self, project_path: str, run_id: str, preview: bool, event: threading.Event, update: Any) -> None:
+        workspace, project = self._load_project(project_path)
+        run = next((item for item in project.production_runs if item.id == run_id), None)
+        if run is None:
+            raise RuntimeError("The production run is unavailable.")
+        edit_ids = run.selected_edit_ids or run.accepted_edit_ids or run.generated_edit_ids
+        run.status = "rendering"
+        save_project(workspace, project)
+        for index, edit_id in enumerate(edit_ids):
+            if event.is_set():
+                workspace, project = self._load_project(project_path)
+                run = next(item for item in project.production_runs if item.id == run_id)
+                run.status = "cancelled"
+                save_project(workspace, project)
+                return
+            update(.05 + .88 * index / max(1, len(edit_ids)), f"{'Previewing' if preview else 'Rendering'} {index + 1} of {len(edit_ids)}", True)
+            workspace, project = self._load_project(project_path)
+            run = next(item for item in project.production_runs if item.id == run_id)
+            run.edit_states[edit_id] = {"state": "rendering", "stage": "Rendering", "error": None}
+            save_project(workspace, project)
+            try:
+                self._render_edit_sequence_job(project_path, edit_id, preview, event, lambda *_args: None)
+                workspace, project = self._load_project(project_path)
+                run = next(item for item in project.production_runs if item.id == run_id)
+                run.edit_states[edit_id] = {"state": "preview_ready" if preview else "rendered", "stage": "Completed", "error": None}
+            except Exception as exc:
+                safe_error = sanitize_diagnostic_text(str(exc))
+                run.edit_states[edit_id] = {"state": "failed", "stage": "Failed", "error": safe_error}
+                run.errors.append(f"{edit_id}: {safe_error}")
+            save_project(workspace, project)
+        run.status = "completed" if all(item.get("state") != "rendering" for item in run.edit_states.values()) else "review"
+        save_project(workspace, project)
+        update(.96, "Batch render complete", False)
+
+    def _production_package_job(self, project_path: str, run_id: str, event: threading.Event, update: Any) -> None:
+        workspace, project = self._load_project(project_path)
+        run = next((item for item in project.production_runs if item.id == run_id), None)
+        if run is None:
+            raise RuntimeError("The production run is unavailable.")
+        profile = WorkflowProfile(**run.workflow_profile_snapshot)
+        campaign = CampaignProfile(**run.campaign_profile_snapshot) if run.campaign_profile_snapshot else None
+        package_stem = campaign.name if campaign else f"{project.name}-{run.id}"
+        final_root = collision_safe_path(workspace.root / "exports", package_stem, "")
+        package_root = final_root.with_name(final_root.name + ".partial")
+        if package_root.exists():
+            shutil.rmtree(package_root)
+        videos, captions_dir, timelines_dir, metadata = (package_root / name for name in ("videos", "captions", "timelines", "metadata"))
+        for directory in (videos, captions_dir, timelines_dir, metadata):
+            directory.mkdir(parents=True, exist_ok=True)
+        edit_ids = run.accepted_edit_ids or run.selected_edit_ids or run.generated_edit_ids
+        deliverables: list[dict[str, object]] = []
+        for index, edit_id in enumerate(edit_ids, 1):
+            if event.is_set():
+                shutil.rmtree(package_root, ignore_errors=True)
+                run.status = "cancelled"
+                save_project(workspace, project)
+                return
+            sequence = next((item for item in project.edit_sequences if item.id == edit_id), None)
+            if sequence is None:
+                continue
+            naming = campaign.export_naming if campaign else "{project}-{index}-{title}"
+            stem = render_filename(naming, project=project.name, campaign=campaign.name if campaign else "", creator=campaign.creator if campaign else "", index=index, title=sequence.title)
+            entry: dict[str, object] = {"edit_id": edit_id, "title": sequence.title, "duration_seconds": sequence.duration_seconds,
+                "source_ranges": [{"in": float(item.source_in.seconds), "out": float(item.source_out.seconds)} for item in sequence.segments], "warnings": []}
+            if sequence.render_path and Path(sequence.render_path).is_file():
+                video_path = collision_safe_path(videos, stem, ".mp4")
+                shutil.copy2(sequence.render_path, video_path)
+                entry["video"] = str(video_path.relative_to(package_root))
+            else:
+                entry["warnings"].append("Final render unavailable.")
+            visual = next((item for item in project.visual_edit_plans if item.sequence_id == edit_id), None)
+            if project.transcripts:
+                track = build_edit_sequence_caption_track(sequence, project.transcripts[-1], positions={item.edit_segment_id: item.position for item in visual.caption_layout} if visual else None)
+                srt_path = collision_safe_path(captions_dir, stem, ".srt")
+                lines: list[str] = []
+                for cue_index, cue in enumerate(track.cues, 1):
+                    def clock(value: float) -> str:
+                        millis = round(value * 1000); hours, rem = divmod(millis, 3600000); minutes, rem = divmod(rem, 60000); seconds, ms = divmod(rem, 1000)
+                        return f"{hours:02d}:{minutes:02d}:{seconds:02d},{ms:03d}"
+                    lines.extend((str(cue_index), f"{clock(float(cue.start.seconds))} --> {clock(float(cue.end.seconds))}", cue.editable_text_override or cue.text, ""))
+                srt_path.write_text("\n".join(lines), encoding="utf-8")
+                entry["captions"] = str(srt_path.relative_to(package_root))
+            timeline = self._timeline_for_edit_sequence(project, edit_id)
+            otio_path, xml_path = collision_safe_path(timelines_dir, stem, ".otio"), collision_safe_path(timelines_dir, stem, ".xml")
+            entry["warnings"].extend(export_otio(timeline, {item.id: item for item in project.sources}, otio_path))
+            entry["warnings"].extend(export_premiere_xml(timeline, {item.id: item for item in project.sources}, xml_path))
+            entry["otio"], entry["premiere_xml"] = str(otio_path.relative_to(package_root)), str(xml_path.relative_to(package_root))
+            validation = run.campaign_validations.get(edit_id)
+            entry["campaign_validation"] = asdict(validation) if validation else None
+            deliverables.append(entry)
+        write_manifest(metadata / "manifest.json", run, project.name, deliverables)
+        os.replace(package_root, final_root)
+        run.output_package_path = str(final_root)
+        run.status = "completed"
+        save_project(workspace, project)
+        update(.96, f"Output package created with {len(deliverables)} deliverable(s)", False)
 
     def _proxy_job(self, project_path: str, event: threading.Event, update: Any) -> None:
         workspace, project = self._load_project(project_path)
@@ -740,6 +1290,12 @@ class DesktopService:
         project.reframe_tracks = [item for item in project.reframe_tracks if item.id != track.id]
         project.reframe_tracks.append(track)
         clip.reframe_track_id = track.id
+        caption_track = next((item for item in project.caption_tracks if item.id == clip.caption_track_id), None)
+        detected_y = [point.subject_y for point in track.points if point.detected]
+        if caption_track and detected_y:
+            safe_position = "upper" if sum(detected_y) / len(detected_y) > .58 else "lower"
+            for cue in caption_track.cues:
+                cue.position = safe_position
         clip.render_path = None
         save_project(workspace, project)
 
@@ -811,21 +1367,43 @@ class DesktopService:
         sequence = next((item for item in project.edit_sequences if item.id == sequence_id), None)
         if sequence is None or not project.sources or not project.transcripts:
             raise RuntimeError("The selected Smart Edit is unavailable.")
-        if len(sequence.segments) < 2 or sequence.integrity.status == "failed":
-            raise RuntimeError("Review the Smart Edit integrity findings before rendering.")
-        update(0.1, "Mapping Smart Edit captions", True)
-        caption_track = build_edit_sequence_caption_track(sequence, project.transcripts[-1])
-        captions = workspace.root / "cache" / "previews" / f"{sequence.id}-r{sequence.revision}.ass"
-        export_edit_sequence_ass(caption_track, captions)
+        if len(sequence.segments) < 2 or sequence.status != "ready" or sequence.integrity.status != "passed" or not sequence.editorial_review or not sequence.editorial_review.accepted:
+            raise RuntimeError("Only a coherent Smart Edit that passed editorial review can be rendered.")
+        plan = next((item for item in project.visual_edit_plans if item.sequence_id == sequence.id and item.sequence_revision == sequence.revision and item.detector_version == DETECTOR_VERSION and item.detector_config == DETECTOR_CONFIG), None)
+        if plan is None:
+            update(0.08, "Analyzing visual composition", True)
+            observations, warnings = analyze_visual_observations(Path(project.sources[0].reference), sequence)
+            plan = build_visual_edit_plan(sequence, observations)
+            plan.warnings.extend(warnings)
+            project.visual_edit_plans = [item for item in project.visual_edit_plans if item.sequence_id != sequence.id] + [plan]
+        enhancement = next((item for item in project.enhancement_plans if item.sequence_id == sequence.id and item.sequence_revision == sequence.revision and item.visual_plan_revision == plan.revision), None)
+        if enhancement is None:
+            enhancement = validate_enhancement_plan(plan_enhancements(sequence, plan), sequence)
+            project.enhancement_plans = [item for item in project.enhancement_plans if item.sequence_id != sequence.id] + [enhancement]
+        if enhancement.status not in {"ready", "review"}:
+            raise RuntimeError("Resolve or disable missing/unsafe enhancements before rendering.")
+        update(0.15, "Mapping word-timed captions", True)
+        positions = {item.edit_segment_id: item.position for item in plan.caption_layout}
+        caption_track = build_edit_sequence_caption_track(sequence, project.transcripts[-1], positions=positions)
+        captions = workspace.root / "cache" / "previews" / f"{sequence.id}-r{sequence.revision}-v{plan.revision}-{plan.caption_preset}.ass"
+        export_edit_sequence_ass(caption_track, captions, plan.caption_preset)
+        graphics: Path | None = None
+        if any(item.enabled for item in enhancement.graphic_items):
+            graphics = workspace.root / "cache" / "previews" / f"{sequence.id}-e{enhancement.revision}-graphics.ass"
+            graphics.parent.mkdir(parents=True, exist_ok=True)
+            # Keep one canonical 1080x1920 ASS coordinate system. FFmpeg scales it
+            # for the lower-cost preview, so typography matches the final render.
+            graphics.write_text(serialize_graphics_ass(enhancement), encoding="utf-8")
         output_dir = workspace.root / ("cache/previews" if preview else "exports")
-        output = output_dir / f"{sequence.id}-r{sequence.revision}.mp4" if preview else self._available_output(output_dir, f"{sequence.title}-smart-edit", ".mp4")
+        output = output_dir / f"{sequence.id}-r{sequence.revision}-v{plan.revision}-e{enhancement.revision}-{plan.caption_preset}.mp4" if preview else self._available_output(output_dir, f"{sequence.title}-smart-edit-phase2c", ".mp4")
         if preview and output.exists():
+            FFmpegService().validate_audible_audio(output)
             sequence.preview_path = str(output)
             update(0.95, "Using cached Smart Edit preview", True)
             save_project(workspace, project)
             return
         update(0.25, "Rendering approved source segments", False)
-        FFmpegService().render_edit_sequence(Path(project.sources[0].reference), sequence, output, width=360 if preview else 1080, height=640 if preview else 1920, captions=captions, cancel_event=event)
+        FFmpegService().render_edit_sequence(Path(project.sources[0].reference), sequence, output, width=360 if preview else 1080, height=640 if preview else 1920, captions=captions, visual_plan=plan, enhancement_plan=enhancement, graphics=graphics, cancel_event=event)
         if preview:
             sequence.preview_path = str(output)
         else:
@@ -833,6 +1411,48 @@ class DesktopService:
             self._record_output(project, "smart_edit_mp4", output, edit_sequence_id=sequence.id)
         save_project(workspace, project)
         update(0.95, "Smart Edit preview ready" if preview else "Smart Edit rendered", False)
+
+    def _visual_analyze_job(self, project_path: str, sequence_id: str, event: threading.Event, update: Any) -> None:
+        workspace, project = self._load_project(project_path)
+        sequence = next((item for item in project.edit_sequences if item.id == sequence_id), None)
+        if sequence is None or not project.sources:
+            raise RuntimeError("The selected Smart Edit is unavailable.")
+        existing = next((item for item in project.visual_edit_plans if item.sequence_id == sequence_id and item.sequence_revision == sequence.revision and item.detector_version == DETECTOR_VERSION and item.detector_config == DETECTOR_CONFIG), None)
+        if existing:
+            update(.95, "Using cached visual analysis", True)
+            return
+        update(.12, "Sampling approved source ranges", True)
+        observations, warnings = analyze_visual_observations(Path(project.sources[0].reference), sequence)
+        if event.is_set():
+            return
+        update(.72, "Planning stable compositions", False)
+        plan = build_visual_edit_plan(sequence, observations)
+        plan.warnings.extend(warnings)
+        project.visual_edit_plans = [item for item in project.visual_edit_plans if item.sequence_id != sequence_id] + [plan]
+        sequence.preview_path = None
+        sequence.render_path = None
+        save_project(workspace, project)
+        update(.95, "Visual treatment ready", False)
+
+    def _enhancement_plan_job(self, project_path: str, sequence_id: str, event: threading.Event, update: Any) -> None:
+        workspace, project = self._load_project(project_path)
+        sequence = next((item for item in project.edit_sequences if item.id == sequence_id), None)
+        visual = next((item for item in project.visual_edit_plans if item.sequence_id == sequence_id), None)
+        if sequence is None or visual is None or sequence.status != "ready":
+            raise RuntimeError("Approve the Smart Edit and analyze visuals before planning enhancements.")
+        existing = next((item for item in project.enhancement_plans if item.sequence_id == sequence_id and item.sequence_revision == sequence.revision and item.visual_plan_revision == visual.revision), None)
+        if existing:
+            update(.95, "Using cached enhancement plan", True)
+            return
+        update(.25, "Finding restrained enhancement opportunities", True)
+        if event.is_set():
+            return
+        plan = validate_enhancement_plan(plan_enhancements(sequence, visual), sequence)
+        project.enhancement_plans = [item for item in project.enhancement_plans if item.sequence_id != sequence_id] + [plan]
+        sequence.preview_path = None
+        sequence.render_path = None
+        save_project(workspace, project)
+        update(.95, "Enhancement plan ready", False)
 
     def _timeline_for_clips(self, project: AutoClipProject) -> Timeline:
         clips = [clip for clip in project.clips if clip.selected] or project.clips
@@ -879,6 +1499,12 @@ class DesktopService:
             output = self._available_output(output_dir, project.name, ".otio" if export_format == "otio" else ".xml")
             sources = {source.id: source for source in project.sources}
             warnings = (export_otio if export_format == "otio" else export_premiere_xml)(timeline, sources, output)
+            if edit_sequence_id:
+                enhancement = next((item for item in project.enhancement_plans if item.sequence_id == edit_sequence_id), None)
+                if enhancement and any(item.enabled for item in [*enhancement.broll_items, *enhancement.graphic_items, *enhancement.sound_cues]):
+                    warnings.append("Phase 2C enhancements remain canonical in AutoClip and are not fully recreated by this minimal editable export.")
+                if enhancement and enhancement.music_track and enhancement.music_track.enabled:
+                    warnings.append("The music bed and dialogue ducking are represented in the rendered reference, not this minimal editable export.")
             project.timelines.append(timeline)
         else:
             output = self._available_output(output_dir, project.name, ".autoclip.json")

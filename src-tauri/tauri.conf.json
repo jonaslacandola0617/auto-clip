@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AutoClip",
-  "version": "0.1.0",
+  "version": "1.0.0-rc.1",
   "identifier": "com.autoclip.desktop",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -25,12 +25,31 @@
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost; media-src 'self' asset: http://asset.localhost",
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": []
       }
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "all"
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "AutoClip Contributors",
+    "shortDescription": "Turn long-form video into polished vertical edits.",
+    "longDescription": "AutoClip is a local-first Windows desktop editor for transcription, highlight discovery, Smart Edits, visual treatment, captions, production runs, and export.",
+    "licenseFile": "../THIRD_PARTY_NOTICES.md",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "resources": {
+      "resources/runtime/": "runtime/",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller"
+      },
+      "nsis": {
+        "compression": "lzma",
+        "installMode": "currentUser",
+        "startMenuFolder": "AutoClip"
+      }
+    }
   }
 }

@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .storage import atomic_write_json
+from .release import sanitize_diagnostic_text
 
 
-JOB_STATES = {"queued", "running", "completed", "failed", "cancelled"}
+JOB_STATES = {"queued", "waiting", "running", "cancelling", "completed", "failed", "cancelled"}
 
 
 def _now() -> str:
@@ -49,7 +50,7 @@ class JobManager:
         import json
         for raw in json.loads(self.store_path.read_text(encoding="utf-8")).get("jobs", []):
             job = Job(**raw)
-            if job.state in {"queued", "running"}:
+            if job.state in {"queued", "waiting", "running", "cancelling"}:
                 job.state = "failed"
                 job.completed_at = _now()
                 job.cancellable = False
@@ -99,7 +100,7 @@ class JobManager:
                 job.state = "failed"
                 job.completed_at = _now()
                 job.cancellable = False
-                job.error = {"code": "job_failed", "message": str(exc) or "The job failed.", "recoverable": True}
+                job.error = {"code": "job_failed", "message": sanitize_diagnostic_text(str(exc) or "The job failed."), "recoverable": True}
                 self._persist()
 
     def _mark_cancelled(self, job: Job) -> None:
@@ -128,6 +129,7 @@ class JobManager:
             if not job.cancellable:
                 raise RuntimeError("This job is at a stage that cannot be cancelled safely.")
             self._cancel_events[job_id].set()
+            job.state = "cancelling"
             job.current_stage = "Cancelling safely"
             self._persist()
             return Job(**asdict(job))

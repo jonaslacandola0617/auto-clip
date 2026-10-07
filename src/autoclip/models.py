@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from . import SCHEMA_VERSION
+from .editor_domain import MediaLibrary, Sequence
 from .time import MediaTime, Rational
 
 
@@ -555,6 +556,7 @@ class OutputArtifact:
     path: str
     clip_id: str | None = None
     edit_sequence_id: str | None = None
+    sequence_revision: int | None = None
     warnings: list[str] = field(default_factory=list)
 
 
@@ -713,6 +715,11 @@ class AutoClipProject:
     candidate_windows: list[CandidateWindow] = field(default_factory=list)
     analysis_runs: list[AnalysisRunMetrics] = field(default_factory=list)
     analysis_revision: str | None = None
+    media_library: MediaLibrary = field(default_factory=MediaLibrary)
+    sequences: list[Sequence] = field(default_factory=list)
+    active_sequence_id: str | None = None
+    editor_revision: int = 0
+    legacy_compatibility: dict[str, Any] = field(default_factory=dict)
     schema_version: str = SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -721,7 +728,7 @@ class AutoClipProject:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AutoClipProject":
         schema_version = data.get("schema_version", "0.2-phase0")
-        if schema_version not in {"0.2-phase0", "0.3-phase2a", "0.3-phase2a1", "0.3-phase2b", "0.3-phase2c", "0.4-phase3a", SCHEMA_VERSION}:
+        if schema_version not in {"0.2-phase0", "0.3-phase2a", "0.3-phase2a1", "0.3-phase2b", "0.3-phase2c", "0.4-phase3a", "2.0", "2.1", SCHEMA_VERSION}:
             raise ValueError(f"unsupported schema version: {data.get('schema_version')}")
         sources = [MediaSource(
             **{**s, "duration": _mt(s["duration"]), "frame_rate": Rational.parse(s["frame_rate"]),
@@ -799,6 +806,8 @@ class AutoClipProject:
         analysis_runs = [AnalysisRunMetrics(**{
             **run, "stages": [AnalysisStageMetric(**stage) for stage in run.get("stages", [])],
         }) for run in data.get("analysis_runs", [])]
+        media_library = MediaLibrary.from_dict(data.get("media_library", {}))
+        editor_sequences = [Sequence.from_dict(sequence) for sequence in data.get("sequences", [])]
         return cls(
             id=data["id"], name=data["name"], sources=sources, transcripts=transcripts,
             candidates=candidates, timelines=timelines, reframe_tracks=reframes,
@@ -807,5 +816,8 @@ class AutoClipProject:
             enhancement_plans=enhancement_plans, workflow_profiles=workflow_profiles,
             campaign_profiles=campaign_profiles, production_runs=production_runs,
             candidate_windows=candidate_windows, analysis_runs=analysis_runs,
-            analysis_revision=data.get("analysis_revision"), schema_version=SCHEMA_VERSION,
+            analysis_revision=data.get("analysis_revision"), media_library=media_library,
+            sequences=editor_sequences, active_sequence_id=data.get("active_sequence_id"),
+            editor_revision=int(data.get("editor_revision", 0)),
+            legacy_compatibility=dict(data.get("legacy_compatibility", {})), schema_version=SCHEMA_VERSION,
         )

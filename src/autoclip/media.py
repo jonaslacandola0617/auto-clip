@@ -266,7 +266,8 @@ class FFmpegService:
         arguments = [self.ffmpeg, "-y"]
         render_ranges = visual_plan.shots if visual_plan and visual_plan.shots else sequence.segments
         for item in render_ranges:
-            arguments.extend(["-ss", f"{float(item.source_in.seconds):.9f}", "-to", f"{float(item.source_out.seconds):.9f}", "-i", str(source)])
+            duration = item.source_out.seconds - item.source_in.seconds
+            arguments.extend(["-ss", f"{float(item.source_in.seconds):.9f}", "-t", f"{float(duration):.9f}", "-i", str(source)])
         assets = {item.id: item for item in enhancement_plan.assets} if enhancement_plan else {}
         broll_items = [item for item in (enhancement_plan.broll_items if enhancement_plan else []) if item.enabled and item.asset_id in assets and Path(assets[item.asset_id].reference).is_file()]
         sound_cues = [item for item in (enhancement_plan.sound_cues if enhancement_plan else []) if item.enabled and item.asset_id in assets and Path(assets[item.asset_id].reference).is_file()]
@@ -287,23 +288,27 @@ class FFmpegService:
         concat_inputs = ""
         decisions = {item.id: item for item in visual_plan.reframe_decisions} if visual_plan else {}
         for index, item in enumerate(render_ranges):
+            duration = float(item.source_out.seconds - item.source_in.seconds)
             decision = decisions.get(getattr(item, "reframe_decision_id", ""))
             if decision and decision.layout == "split_screen" and len(decision.panels) >= 2:
                 panel_filters = []
                 for panel_index, panel in enumerate(decision.panels[:2]):
                     cx = panel.x + panel.width / 2
                     panel_filters.append(f"[sp{index}{panel_index}]crop=w='min(iw,trunc(ih*9/8/2)*2)':h=ih:x='max(0,min(iw-ow,{cx:.6f}*iw-ow/2))':y=0,scale={width}:{height//2}:force_original_aspect_ratio=increase,crop={width}:{height//2}[p{index}{panel_index}]")
-                chains.append(f"[{index}:v]split=2[sp{index}0][sp{index}1]")
+                chains.append(f"[{index}:v]trim=duration={duration:.9f},split=2[sp{index}0][sp{index}1]")
                 chains.extend(panel_filters)
                 chains.append(f"[p{index}0][p{index}1]vstack=inputs=2,setsar=1,setpts=PTS-STARTPTS[v{index}]")
             elif decision:
                 scale = max(1.0, min(1.2, decision.scale))
-                chains.append(f"[{index}:v]crop=w='min(iw,trunc(ih*9/16/{scale:.6f}/2)*2)':h='trunc(ih/{scale:.6f}/2)*2':x='max(0,min(iw-ow,{decision.crop_x:.6f}*iw-ow/2))':y='max(0,min(ih-oh,{decision.crop_y:.6f}*ih-oh*0.38))',scale={width}:{height},setsar=1,setpts=PTS-STARTPTS[v{index}]")
+                chains.append(f"[{index}:v]trim=duration={duration:.9f},crop=w='min(iw,trunc(ih*9/16/{scale:.6f}/2)*2)':h='trunc(ih/{scale:.6f}/2)*2':x='max(0,min(iw-ow,{decision.crop_x:.6f}*iw-ow/2))':y='max(0,min(ih-oh,{decision.crop_y:.6f}*ih-oh*0.38))',scale={width}:{height},setsar=1,setpts=PTS-STARTPTS[v{index}]")
             else:
-                chains.append(f"[{index}:v]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}:x=(in_w-out_w)/2:y=(in_h-out_h)/2,setsar=1,setpts=PTS-STARTPTS[v{index}]")
-            chains.append(f"[{index}:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS[a{index}]")
+                chains.append(f"[{index}:v]trim=duration={duration:.9f},scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}:x=(in_w-out_w)/2:y=(in_h-out_h)/2,setsar=1,setpts=PTS-STARTPTS[v{index}]")
+            chains.append(f"[{index}:a]atrim=duration={duration:.9f},aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS[a{index}]")
             concat_inputs += f"[v{index}][a{index}]"
-        chains.append(f"{concat_inputs}concat=n={len(render_ranges)}:v=1:a=1[vcat][acat]")
+        total_duration = sequence.duration_seconds
+        chains.append(f"{concat_inputs}concat=n={len(render_ranges)}:v=1:a=1[vcatraw][acatraw]")
+        chains.append(f"[vcatraw]trim=duration={total_duration:.9f},setpts=PTS-STARTPTS[vcat]")
+        chains.append(f"[acatraw]atrim=duration={total_duration:.9f},asetpts=PTS-STARTPTS[acat]")
         video_current = "vcat"
         for number, (index, item, _asset) in enumerate(broll_inputs):
             duration = item.timeline_end - item.timeline_start

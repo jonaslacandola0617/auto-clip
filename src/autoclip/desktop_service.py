@@ -18,6 +18,11 @@ from .ai import GeminiProvider
 from .captions import CAPTION_PRESETS, build_caption_track, build_edit_sequence_caption_track, export_ass, export_edit_sequence_ass, export_srt
 from .credentials import CredentialStore
 from .enhancements import plan_enhancements, relink_asset, serialize_graphics_ass, validate_enhancement_plan
+from .editor import (
+    EditorCommand, EditorSession, accept_validated_ai_plan, associate_preview, associate_render, ensure_editor_domain,
+    sequence_to_caption_track, sequence_to_edit_sequence, sequence_to_enhancement_plan,
+    sequence_to_timeline, validate_sequence,
+)
 from .desktop_protocol import ProtocolError
 from .exporters.otio import export_otio
 from .exporters.premiere_xml import export_premiere_xml
@@ -83,6 +88,7 @@ class DesktopService:
         self.profile_library_path = self.state_root / "profiles.json"
         self.credentials = CredentialStore(self.state_root / "credentials" / "gemini.dpapi")
         self.jobs = JobManager(self.state_root / "jobs.json")
+        self._editor_sessions: dict[str, EditorSession] = {}
         _development_api_key(self.project_root)
 
     def dispatch(self, command: str, payload: dict[str, Any]) -> Any:
@@ -110,6 +116,10 @@ class DesktopService:
             "update_edit_sequence": self.update_edit_sequence,
             "update_visual_plan": self.update_visual_plan,
             "update_enhancement_plan": self.update_enhancement_plan,
+            "editor_command": self.editor_command,
+            "editor_transaction": self.editor_transaction,
+            "editor_undo": self.editor_undo,
+            "editor_redo": self.editor_redo,
             "save_workflow_profile": self.save_workflow_profile,
             "save_campaign_profile": self.save_campaign_profile,
             "create_production_run": self.create_production_run,
@@ -235,6 +245,67 @@ class DesktopService:
         workspace, project = self._load_project(str(payload.get("path", "")))
         return self._state(workspace, project)
 
+    def _editor_session(self, project_path: str) -> tuple[Workspace, EditorSession]:
+        workspace, loaded = self._load_project(project_path)
+        key = str(workspace.project_file)
+        session = self._editor_sessions.get(key)
+        if session is None:
+            session = EditorSession(loaded)
+            self._editor_sessions[key] = session
+        elif loaded.editor_revision != session.project.editor_revision:
+            # Another process changed canonical editor state; prefer the newer
+            # persisted revision rather than risking a silent overwrite.
+            session = EditorSession(loaded)
+            self._editor_sessions[key] = session
+        else:
+            # Refresh background-job and legacy metadata while retaining the
+            # in-memory command history and canonical sequence state.
+            sequences = session.project.sequences
+            active_sequence_id = session.project.active_sequence_id
+            editor_revision = session.project.editor_revision
+            session.project = loaded
+            session.project.sequences = sequences
+            session.project.active_sequence_id = active_sequence_id
+            session.project.editor_revision = editor_revision
+        return workspace, session
+
+    def _run_editor_commands(self, payload: dict[str, Any], *, transaction: bool) -> dict[str, Any]:
+        workspace, session = self._editor_session(str(payload.get("project_path", "")))
+        raw_commands = payload.get("commands") if transaction else [payload.get("command", payload)]
+        if not isinstance(raw_commands, list):
+            raise ProtocolError("invalid_editor_command", "The editor command payload is invalid.")
+        try:
+            commands = [EditorCommand(str(value["name"]), str(value["sequence_id"]), dict(value.get("payload", {}))) for value in raw_commands]
+            sequence = session.execute_transaction(commands, label=str(payload.get("label", "Edit")))
+            save_project(workspace, session.project)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProtocolError("invalid_editor_command", "AutoClip couldn't apply that edit.", details=sanitize_diagnostic_text(str(exc))) from exc
+        return {"sequence": sequence.to_dict(), "undo_count": session.undo_count, "redo_count": session.redo_count}
+
+    def editor_command(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._run_editor_commands(payload, transaction=False)
+
+    def editor_transaction(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._run_editor_commands(payload, transaction=True)
+
+    def editor_undo(self, payload: dict[str, Any]) -> dict[str, Any]:
+        workspace, session = self._editor_session(str(payload.get("project_path", "")))
+        try:
+            sequence = session.undo()
+            save_project(workspace, session.project)
+        except ValueError as exc:
+            raise ProtocolError("editor_history_empty", str(exc)) from exc
+        return {"sequence": sequence.to_dict(), "undo_count": session.undo_count, "redo_count": session.redo_count}
+
+    def editor_redo(self, payload: dict[str, Any]) -> dict[str, Any]:
+        workspace, session = self._editor_session(str(payload.get("project_path", "")))
+        try:
+            sequence = session.redo()
+            save_project(workspace, session.project)
+        except ValueError as exc:
+            raise ProtocolError("editor_history_empty", str(exc)) from exc
+        return {"sequence": sequence.to_dict(), "undo_count": session.undo_count, "redo_count": session.redo_count}
+
     def _source_summary(self, source: MediaSource, workspace: Workspace | None = None) -> dict[str, Any]:
         path = Path(source.reference)
         video = next((stream for stream in source.streams if stream.kind == "video"), None)
@@ -358,6 +429,12 @@ class DesktopService:
             "production_runs": [{**asdict(run), "summary": production_summary(run)} for run in project.production_runs],
             "analysis_metrics": asdict(project.analysis_runs[-1]) if project.analysis_runs else None,
             "analysis_revision": project.analysis_revision,
+            "editor_revision": project.editor_revision,
+            "active_sequence_id": project.active_sequence_id,
+            "sequences": [{"id": item.id, "name": item.name, "revision": item.revision,
+                           "duration_seconds": float(item.duration.seconds), "dirty": item.dirty,
+                           "lifecycle": item.lifecycle, "stale_dependencies": item.dependencies.stale_dependencies}
+                          for item in project.sequences],
         }
 
     def inspect_media(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -382,6 +459,9 @@ class DesktopService:
             project.sources[0] = replacement
         else:
             project.sources.append(replacement)
+        ensure_editor_domain(project)
+        asset = project.media_library.asset(source_id)
+        asset.relink(replacement.reference, replacement.fingerprint)
         save_project(workspace, project)
         return self._state(workspace, project)
 
@@ -1138,9 +1218,13 @@ class DesktopService:
             contracted.append(sequence)
         sequences = contracted
         project.moments, project.story_concepts, project.edit_sequences = moments, stories, sequences
+        project.sequences = [item for item in project.sequences if not item.metadata.get("legacy_edit_sequence_id")]
         project.visual_edit_plans = []
         project.enhancement_plans = []
         project.production_runs = []
+        for sequence in sequences:
+            if sequence.status == "ready" and sequence.integrity.status == "passed":
+                accept_validated_ai_plan(project, sequence)
         project.analysis_revision = workspace.cache_key("smart_edit_revision", {"transcript_revision": transcript.revision_id, "moments": [item.id for item in moments], "stories": [item.id for item in stories], "prompt": "phase2a1-v1", "model": provider.model})
         save_project(workspace, project)
         ready_count = sum(item.status == "ready" for item in sequences)
@@ -1368,10 +1452,16 @@ class DesktopService:
             index += 1
         return candidate
 
-    def _record_output(self, project: AutoClipProject, kind: str, path: Path, clip_id: str | None = None, warnings: list[str] | None = None, edit_sequence_id: str | None = None) -> None:
+    def _record_output(self, project: AutoClipProject, kind: str, path: Path, clip_id: str | None = None, warnings: list[str] | None = None, edit_sequence_id: str | None = None, sequence_revision: int | None = None) -> None:
         project.outputs.append(OutputArtifact(
-            id=f"output_{len(project.outputs) + 1}", kind=kind, path=str(path), clip_id=clip_id, edit_sequence_id=edit_sequence_id, warnings=warnings or [],
+            id=f"output_{len(project.outputs) + 1}", kind=kind, path=str(path), clip_id=clip_id,
+            edit_sequence_id=edit_sequence_id, sequence_revision=sequence_revision, warnings=warnings or [],
         ))
+
+    def _newer_editor_revision(self, workspace: Workspace, sequence_id: str, started_revision: int) -> AutoClipProject | None:
+        latest = load_project(workspace)
+        current = next((item for item in latest.sequences if item.id == sequence_id), None)
+        return latest if current is not None and current.revision != started_revision else None
 
     def _render_job(self, project_path: str, clip_id: str, preview: bool, event: threading.Event, update: Any) -> None:
         workspace, project = self._load_project(project_path)
@@ -1408,10 +1498,15 @@ class DesktopService:
 
     def _render_edit_sequence_job(self, project_path: str, sequence_id: str, preview: bool, event: threading.Event, update: Any) -> None:
         workspace, project = self._load_project(project_path)
-        sequence = next((item for item in project.edit_sequences if item.id == sequence_id), None)
+        editor_sequence = next((item for item in project.sequences if item.id == sequence_id), None)
+        sequence = sequence_to_edit_sequence(project, editor_sequence) if editor_sequence else next((item for item in project.edit_sequences if item.id == sequence_id), None)
         if sequence is None or not project.sources or not project.transcripts:
             raise RuntimeError("The selected Smart Edit is unavailable.")
-        if len(sequence.segments) < 2 or sequence.status != "ready" or sequence.integrity.status != "passed" or not sequence.editorial_review or not sequence.editorial_review.accepted:
+        if editor_sequence:
+            validate_sequence(project, editor_sequence)
+            if not sequence.segments:
+                raise RuntimeError("The selected editor sequence has no enabled video clips.")
+        elif len(sequence.segments) < 2 or sequence.status != "ready" or sequence.integrity.status != "passed" or not sequence.editorial_review or not sequence.editorial_review.accepted:
             raise RuntimeError("Only a coherent Smart Edit that passed editorial review can be rendered.")
         plan = next((item for item in project.visual_edit_plans if item.sequence_id == sequence.id and item.sequence_revision == sequence.revision and item.detector_version == DETECTOR_VERSION and item.detector_config == DETECTOR_CONFIG), None)
         if plan is None:
@@ -1424,11 +1519,15 @@ class DesktopService:
         if enhancement is None:
             enhancement = validate_enhancement_plan(plan_enhancements(sequence, plan), sequence)
             project.enhancement_plans = [item for item in project.enhancement_plans if item.sequence_id != sequence.id] + [enhancement]
+        if editor_sequence:
+            enhancement = sequence_to_enhancement_plan(project, editor_sequence, enhancement)
         if enhancement.status not in {"ready", "review"}:
             raise RuntimeError("Resolve or disable missing/unsafe enhancements before rendering.")
         update(0.15, "Mapping word-timed captions", True)
         positions = {item.edit_segment_id: item.position for item in plan.caption_layout}
-        caption_track = build_edit_sequence_caption_track(sequence, project.transcripts[-1], positions=positions)
+        caption_track = sequence_to_caption_track(editor_sequence) if editor_sequence and any(
+            track.type == "captions" and track.items for track in editor_sequence.tracks
+        ) else build_edit_sequence_caption_track(sequence, project.transcripts[-1], positions=positions)
         captions = workspace.root / "cache" / "previews" / f"{sequence.id}-r{sequence.revision}-v{plan.revision}-{plan.caption_preset}.ass"
         export_edit_sequence_ass(caption_track, captions, plan.caption_preset)
         graphics: Path | None = None
@@ -1442,17 +1541,47 @@ class DesktopService:
         output = output_dir / f"{sequence.id}-r{sequence.revision}-v{plan.revision}-e{enhancement.revision}-{plan.caption_preset}.mp4" if preview else self._available_output(output_dir, f"{sequence.title}-smart-edit-phase2c", ".mp4")
         if preview and output.exists():
             FFmpegService().validate_audible_audio(output)
+            newer = self._newer_editor_revision(workspace, sequence_id, sequence.revision) if editor_sequence else None
+            if newer is not None:
+                update(0.95, f"Preview completed for earlier sequence revision {sequence.revision}", True)
+                return
             sequence.preview_path = str(output)
+            legacy_sequence = next((item for item in project.edit_sequences if item.id == sequence_id), None)
+            if legacy_sequence:
+                legacy_sequence.preview_path = str(output)
+            if editor_sequence:
+                associate_preview(editor_sequence, sequence.revision)
             update(0.95, "Using cached Smart Edit preview", True)
             save_project(workspace, project)
             return
         update(0.25, "Rendering approved source segments", False)
         FFmpegService().render_edit_sequence(Path(project.sources[0].reference), sequence, output, width=360 if preview else 1080, height=640 if preview else 1920, captions=captions, visual_plan=plan, enhancement_plan=enhancement, graphics=graphics, cancel_event=event)
+        newer = self._newer_editor_revision(workspace, sequence_id, sequence.revision) if editor_sequence else None
+        if newer is not None:
+            if not preview:
+                self._record_output(
+                    newer, "smart_edit_mp4", output, edit_sequence_id=sequence.id,
+                    sequence_revision=sequence.revision,
+                    warnings=["Rendered from an earlier sequence revision; retained as a stale output."],
+                )
+                save_project(workspace, newer)
+            update(0.95, f"Render completed for earlier sequence revision {sequence.revision}", False)
+            return
         if preview:
             sequence.preview_path = str(output)
+            legacy_sequence = next((item for item in project.edit_sequences if item.id == sequence_id), None)
+            if legacy_sequence:
+                legacy_sequence.preview_path = str(output)
+            if editor_sequence:
+                associate_preview(editor_sequence, sequence.revision)
         else:
             sequence.render_path = str(output)
-            self._record_output(project, "smart_edit_mp4", output, edit_sequence_id=sequence.id)
+            legacy_sequence = next((item for item in project.edit_sequences if item.id == sequence_id), None)
+            if legacy_sequence:
+                legacy_sequence.render_path = str(output)
+            if editor_sequence:
+                associate_render(editor_sequence, sequence.revision)
+            self._record_output(project, "smart_edit_mp4", output, edit_sequence_id=sequence.id, sequence_revision=sequence.revision)
         save_project(workspace, project)
         update(0.95, "Smart Edit preview ready" if preview else "Smart Edit rendered", False)
 
@@ -1513,6 +1642,9 @@ class DesktopService:
         )
 
     def _timeline_for_edit_sequence(self, project: AutoClipProject, sequence_id: str) -> Timeline:
+        editor_sequence = next((item for item in project.sequences if item.id == sequence_id), None)
+        if editor_sequence is not None:
+            return sequence_to_timeline(editor_sequence)
         sequence = next((item for item in project.edit_sequences if item.id == sequence_id), None)
         if sequence is None:
             raise RuntimeError("The selected Smart Edit is unavailable.")

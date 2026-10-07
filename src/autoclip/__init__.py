@@ -1,6 +1,6 @@
 """AutoClip local processing package."""
 
-SCHEMA_VERSION = "2.1"
+SCHEMA_VERSION = "2.2"
 
 from .version import APP_VERSION
 

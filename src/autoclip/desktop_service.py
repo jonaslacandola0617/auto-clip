@@ -282,6 +282,7 @@ class DesktopService:
             "duration_seconds": float(candidate.source_end.seconds - candidate.source_start.seconds),
             "source": "ai", "score": round(score, 1), "category": candidate.category,
             "reason": candidate.reason,
+            "hook": candidate.hook, "payoff": candidate.payoff, "story_structure": candidate.story_structure,
             "quality": asdict(candidate.editorial_quality) if candidate.editorial_quality else None,
         }
 
@@ -1065,7 +1066,7 @@ class DesktopService:
         update(0.1, "Analyzing transcript", True)
         if event.is_set():
             return
-        pipeline = CorePipeline(workspace, FFmpegService(), self._transcriber(settings["whisper_model"]), provider, prompt_version="v2.1-editorial-schema-v1")
+        pipeline = CorePipeline(workspace, FFmpegService(), self._transcriber(settings["whisper_model"]), provider, prompt_version="v2.1-editorial-schema-v2")
         profile = project.workflow_profiles[-1] if project.workflow_profiles else WorkflowProfile(
             "v2_default", "V2 Balanced", min_duration_seconds=12, max_duration_seconds=28,
             target_duration_seconds=20, preferred_max_duration_seconds=25, hard_max_duration_seconds=28,

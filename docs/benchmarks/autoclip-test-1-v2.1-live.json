@@ -1,0 +1,410 @@
+{
+  "benchmark_version": "v2.1-live-provider-v1",
+  "live": {
+    "candidate_window_count": 120,
+    "candidates": [
+      {
+        "duration_seconds": 22.62,
+        "entertainment_score": 87,
+      "overall_weighted_quality": 89.23,
+        "hook": "You could have made it like to a level of Messi, so why not say you beat KD?",
+        "id": "candidate_v2_1",
+        "payoff": "I could beat KD if he was 5'6, or in full court because of speed, but half court he got it.",
+        "quality": {
+          "conflict_tension": 80,
+          "curiosity": 85,
+          "dead_space_density": 16,
+          "energy": 84,
+          "entertainment": 87,
+          "hook": 88,
+          "novelty": 78,
+          "payoff": 85,
+          "policy_version": "v2.1-quality-v1",
+          "standalone_clarity": 90
+        },
+        "source_ranges": [
+          {
+            "end": 3670.92,
+            "start": 3648.3
+          }
+        ],
+        "story_structure": {
+          "context": "Discussing athletic potential and comparing speed against top professional athletes.",
+          "development": "The host presses him to claim he could beat Kevin Durant in basketball.",
+          "hook": "You could have made it like to a level of Messi, so why not say you beat KD?",
+          "payoff": "He admits he would only win full court due to speed or if KD were 5'6, acknowledging KD dominates half court."
+        },
+        "title": "Could Speed Beat KD in 1v1?",
+        "topic": "sports"
+      },
+      {
+        "duration_seconds": 17.64,
+        "entertainment_score": 84,
+      "overall_weighted_quality": 87.35,
+        "hook": "Why do you want to beat an NFL player to the fastest man?",
+        "id": "candidate_v2_2",
+        "payoff": "When people say someone is fast, I know I'm faster so I say no they're not fast.",
+        "quality": {
+          "conflict_tension": 82,
+          "curiosity": 86,
+          "dead_space_density": 18,
+          "energy": 83,
+          "entertainment": 84,
+          "hook": 85,
+          "novelty": 75,
+          "payoff": 82,
+          "policy_version": "v2.1-quality-v1",
+          "standalone_clarity": 88
+        },
+        "source_ranges": [
+          {
+            "end": 958.34,
+            "start": 940.7
+          }
+        ],
+        "story_structure": {
+          "context": "Host questions why he constantly seeks to challenge professional football players to races.",
+          "development": "He explains that people overestimate how fast NFL players really are.",
+          "hook": "Why do you want to beat an NFL player to the fastest man?",
+          "payoff": "He asserts that if he knows he is faster than them, he refuses to compliment their speed."
+        },
+        "title": "Are NFL Players Really That Fast?",
+        "topic": "sports"
+      },
+      {
+        "duration_seconds": 15.62,
+        "entertainment_score": 80,
+      "overall_weighted_quality": 82.6,
+        "hook": "I was never a TikToker, but TikTok is the reason why I'm here now.",
+        "id": "candidate_v2_3",
+        "payoff": "My clips were going viral in 2021, and I give them full credit for blowing up.",
+        "quality": {
+          "conflict_tension": 65,
+          "curiosity": 80,
+          "dead_space_density": 11,
+          "energy": 78,
+          "entertainment": 80,
+          "hook": 82,
+          "novelty": 72,
+          "payoff": 80,
+          "policy_version": "v2.1-quality-v1",
+          "standalone_clarity": 92
+        },
+        "source_ranges": [
+          {
+            "end": 6008.5,
+            "start": 5992.88
+          }
+        ],
+        "story_structure": {
+          "context": "Addressing whether he identifies as a TikToker or simply utilizes clip distribution.",
+          "development": "The host asks how much credit TikTok deserves for his current status.",
+          "hook": "I was never a TikToker, but TikTok is the reason why I'm here now.",
+          "payoff": "He candidly admits viral 2021 TikTok clips were the primary engine behind his massive explosion."
+        },
+        "title": "The Truth About Blowing Up on TikTok",
+        "topic": "entertainment"
+      }
+    ],
+    "metrics": {
+      "ai_request_count": 3,
+      "cache_hits": 1,
+      "cache_misses": 2,
+      "candidate_counts": {
+        "duplicates_suppressed": 0,
+        "fast_retained": 7,
+        "local_shortlist": 24,
+        "local_windows": 120,
+        "planned": 3,
+        "qualified": 3,
+        "validated": 3
+      },
+      "completed_at": "2026-10-07T02:48:05Z",
+      "id": "analysis_1791341248623778200",
+      "pipeline_version": "v2.1-hybrid-v1",
+      "provider_errors": [
+        "strong_planning: transient provider failure recovered by bounded retry"
+      ],
+      "provider_retries": 1,
+      "rejection_reasons": {},
+      "stages": [
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 20490,
+          "cache_hit": true,
+          "duration_seconds": 1.15573,
+          "input_count": 3407,
+          "output_count": 24,
+          "provider_retries": 0,
+          "stage": "local_preprocessing"
+        },
+        {
+          "ai_request_count": 1,
+          "approximate_context_words": 1797,
+          "cache_hit": false,
+          "duration_seconds": 12.256301,
+          "input_count": 24,
+          "output_count": 7,
+          "provider_retries": 0,
+          "stage": "fast_ranking"
+        },
+        {
+          "ai_request_count": 2,
+          "approximate_context_words": 515,
+          "cache_hit": false,
+          "duration_seconds": 22.761193,
+          "input_count": 7,
+          "output_count": 3,
+          "provider_retries": 1,
+          "stage": "strong_planning"
+        },
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 0,
+          "cache_hit": false,
+          "duration_seconds": 0.879989,
+          "input_count": 3,
+          "output_count": 3,
+          "provider_retries": 0,
+          "stage": "deterministic_validation"
+        },
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 0,
+          "cache_hit": false,
+          "duration_seconds": 0.000294,
+          "input_count": 3,
+          "output_count": 3,
+          "provider_retries": 0,
+          "stage": "comparative_ranking"
+        }
+      ],
+      "started_at": "2026-10-07T02:47:28Z",
+      "time_to_first_candidate_seconds": 36.460289,
+      "total_duration_seconds": 37.055612,
+      "transcript_revision": "183b20ab69b6272200cbc31cbf9decbb6ee90b16aaf6892eaf2cb46b2d6d7294",
+      "warnings": []
+    }
+  },
+  "profile": {
+    "hard_maximum": 28.0,
+    "minimum": 12.0,
+    "preferred_maximum": 25.0,
+    "requested_outputs": 5,
+    "style": "high-energy",
+    "target": 20.0
+  },
+  "preview": {
+    "audio": "AAC stereo 44100 Hz",
+    "candidate_id": "candidate_v2_1",
+    "caption_preset": "word_highlight",
+    "duration_seconds": 22.647625,
+    "framing": "fixed center; visual analysis intentionally not rerun",
+    "path": "C:\\Users\\jlaca\\Documents\\AutoClip Projects\\AutoClip_V2_1_Live_Acceptance\\cache\\previews\\v2_live_top-r1.mp4",
+    "title": "Could Speed Beat KD in 1v1?",
+    "video": "H.264 360x640"
+  },
+  "provider": {
+    "fast_configuration": "structured FAST window-ranking prompt; balanced mode; one bounded retry",
+    "fast_model": "gemini-3.6-flash",
+    "name": "GeminiProvider",
+    "strong_configuration": "structured STRONG editorial-planning prompt; balanced mode; one bounded retry",
+    "strong_model": "gemini-3.6-flash"
+  },
+  "provider_attempt_history": {
+    "initial_fast_503_retries": 1
+  },
+  "source": {
+    "duration_seconds": 6601.720125,
+    "project": "AutoClip_Test_1",
+    "segment_count": 3407,
+    "transcript_revision": "183b20ab69b6272200cbc31cbf9decbb6ee90b16aaf6892eaf2cb46b2d6d7294",
+    "transcription_invoked": false,
+    "word_count": 20490
+  },
+  "warm": {
+    "candidate_window_count": 120,
+    "candidates": [
+      {
+        "duration_seconds": 22.62,
+        "entertainment_score": 87,
+        "overall_weighted_quality": 89.23,
+        "hook": "You could have made it like to a level of Messi, so why not say you beat KD?",
+        "id": "candidate_v2_1",
+        "payoff": "I could beat KD if he was 5'6, or in full court because of speed, but half court he got it.",
+        "quality": {
+          "conflict_tension": 80,
+          "curiosity": 85,
+          "dead_space_density": 16,
+          "energy": 84,
+          "entertainment": 87,
+          "hook": 88,
+          "novelty": 78,
+          "payoff": 85,
+          "policy_version": "v2.1-quality-v1",
+          "standalone_clarity": 90
+        },
+        "source_ranges": [
+          {
+            "end": 3670.92,
+            "start": 3648.3
+          }
+        ],
+        "story_structure": {
+          "context": "Discussing athletic potential and comparing speed against top professional athletes.",
+          "development": "The host presses him to claim he could beat Kevin Durant in basketball.",
+          "hook": "You could have made it like to a level of Messi, so why not say you beat KD?",
+          "payoff": "He admits he would only win full court due to speed or if KD were 5'6, acknowledging KD dominates half court."
+        },
+        "title": "Could Speed Beat KD in 1v1?",
+        "topic": "sports"
+      },
+      {
+        "duration_seconds": 17.64,
+        "entertainment_score": 84,
+        "overall_weighted_quality": 87.35,
+        "hook": "Why do you want to beat an NFL player to the fastest man?",
+        "id": "candidate_v2_2",
+        "payoff": "When people say someone is fast, I know I'm faster so I say no they're not fast.",
+        "quality": {
+          "conflict_tension": 82,
+          "curiosity": 86,
+          "dead_space_density": 18,
+          "energy": 83,
+          "entertainment": 84,
+          "hook": 85,
+          "novelty": 75,
+          "payoff": 82,
+          "policy_version": "v2.1-quality-v1",
+          "standalone_clarity": 88
+        },
+        "source_ranges": [
+          {
+            "end": 958.34,
+            "start": 940.7
+          }
+        ],
+        "story_structure": {
+          "context": "Host questions why he constantly seeks to challenge professional football players to races.",
+          "development": "He explains that people overestimate how fast NFL players really are.",
+          "hook": "Why do you want to beat an NFL player to the fastest man?",
+          "payoff": "He asserts that if he knows he is faster than them, he refuses to compliment their speed."
+        },
+        "title": "Are NFL Players Really That Fast?",
+        "topic": "sports"
+      },
+      {
+        "duration_seconds": 15.62,
+        "entertainment_score": 80,
+        "overall_weighted_quality": 82.6,
+        "hook": "I was never a TikToker, but TikTok is the reason why I'm here now.",
+        "id": "candidate_v2_3",
+        "payoff": "My clips were going viral in 2021, and I give them full credit for blowing up.",
+        "quality": {
+          "conflict_tension": 65,
+          "curiosity": 80,
+          "dead_space_density": 11,
+          "energy": 78,
+          "entertainment": 80,
+          "hook": 82,
+          "novelty": 72,
+          "payoff": 80,
+          "policy_version": "v2.1-quality-v1",
+          "standalone_clarity": 92
+        },
+        "source_ranges": [
+          {
+            "end": 6008.5,
+            "start": 5992.88
+          }
+        ],
+        "story_structure": {
+          "context": "Addressing whether he identifies as a TikToker or simply utilizes clip distribution.",
+          "development": "The host asks how much credit TikTok deserves for his current status.",
+          "hook": "I was never a TikToker, but TikTok is the reason why I'm here now.",
+          "payoff": "He candidly admits viral 2021 TikTok clips were the primary engine behind his massive explosion."
+        },
+        "title": "The Truth About Blowing Up on TikTok",
+        "topic": "entertainment"
+      }
+    ],
+    "metrics": {
+      "ai_request_count": 0,
+      "cache_hits": 3,
+      "cache_misses": 0,
+      "candidate_counts": {
+        "duplicates_suppressed": 0,
+        "fast_retained": 7,
+        "local_shortlist": 24,
+        "local_windows": 120,
+        "planned": 3,
+        "qualified": 3,
+        "validated": 3
+      },
+      "completed_at": "2026-10-07T02:48:07Z",
+      "id": "analysis_1791341285676793800",
+      "pipeline_version": "v2.1-hybrid-v1",
+      "provider_errors": [],
+      "provider_retries": 0,
+      "rejection_reasons": {},
+      "stages": [
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 20490,
+          "cache_hit": true,
+          "duration_seconds": 1.068737,
+          "input_count": 3407,
+          "output_count": 24,
+          "provider_retries": 0,
+          "stage": "local_preprocessing"
+        },
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 1797,
+          "cache_hit": true,
+          "duration_seconds": 0.020789,
+          "input_count": 24,
+          "output_count": 7,
+          "provider_retries": 0,
+          "stage": "fast_ranking"
+        },
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 515,
+          "cache_hit": true,
+          "duration_seconds": 0.025075,
+          "input_count": 7,
+          "output_count": 3,
+          "provider_retries": 0,
+          "stage": "strong_planning"
+        },
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 0,
+          "cache_hit": false,
+          "duration_seconds": 0.889432,
+          "input_count": 3,
+          "output_count": 3,
+          "provider_retries": 0,
+          "stage": "deterministic_validation"
+        },
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 0,
+          "cache_hit": false,
+          "duration_seconds": 0.000228,
+          "input_count": 3,
+          "output_count": 3,
+          "provider_retries": 0,
+          "stage": "comparative_ranking"
+        }
+      ],
+      "started_at": "2026-10-07T02:48:05Z",
+      "time_to_first_candidate_seconds": 1.402069,
+      "total_duration_seconds": 2.006112,
+      "transcript_revision": "183b20ab69b6272200cbc31cbf9decbb6ee90b16aaf6892eaf2cb46b2d6d7294",
+      "warnings": []
+    },
+    "same_candidate_ids": true
+  }
+}

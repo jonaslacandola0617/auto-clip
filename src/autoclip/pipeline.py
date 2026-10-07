@@ -152,13 +152,15 @@ class CorePipeline:
         metrics.candidate_counts["fast_retained"] = len(retained)
         metrics.stages.append(AnalysisStageMetric(
             "fast_ranking", round(time.perf_counter() - stage_started, 6),
-            ai_request_count=0 if fast_hit else 1, provider_retries=fast_retry_count[0],
+            ai_request_count=0 if fast_hit else 1 + fast_retry_count[0], provider_retries=fast_retry_count[0],
             input_count=len(shortlist), output_count=len(retained),
             approximate_context_words=sum(len(item["text"].split()) for item in provider_windows), cache_hit=fast_hit,
         ))
         if not retained:
             finish_metrics(metrics, started)
             return [], windows, metrics
+        if fast_retry_count[0]:
+            metrics.provider_errors.append("fast_ranking: transient provider failure recovered by bounded retry")
 
         plan_key = self.workspace.cache_key("v2_strong_planning", identity | {"window_ids": [item["id"] for item in retained]})
         plan_path = self.workspace.root / "analysis" / f"v2-plans-{plan_key}.json"
@@ -181,17 +183,20 @@ class CorePipeline:
             plan_hit = False
         metrics.stages.append(AnalysisStageMetric(
             "strong_planning", round(time.perf_counter() - stage_started, 6),
-            ai_request_count=0 if plan_hit else 1, provider_retries=strong_retry_count[0],
+            ai_request_count=0 if plan_hit else 1 + strong_retry_count[0], provider_retries=strong_retry_count[0],
             input_count=len(retained), output_count=len(raw_candidates),
             approximate_context_words=sum(len(item["text"].split()) for item in retained), cache_hit=plan_hit,
         ))
+        if strong_retry_count[0]:
+            metrics.provider_errors.append("strong_planning: transient provider failure recovered by bounded retry")
 
-        stage_started = time.perf_counter()
+        validation_started = time.perf_counter()
         candidates: list[ClipCandidate] = []
         retained_by_id = {item["id"]: item for item in retained}
         for index, raw in enumerate(raw_candidates):
             planned_window = retained_by_id.get(str(raw.get("window_id", "")))
             if raw.get("window_id") and (planned_window is None or float(raw["start"]) < float(planned_window["start"]) or float(raw["end"]) > float(planned_window["end"])):
+                metrics.rejection_reasons["outside_candidate_window"] = metrics.rejection_reasons.get("outside_candidate_window", 0) + 1
                 continue
             scores = ScoreDimensions(**{**{"emotion": 0}, **raw["scores"]})
             candidate = ClipCandidate(
@@ -199,31 +204,42 @@ class CorePipeline:
                 source_start=MediaTime.from_seconds(Fraction(str(raw["start"])), source.time_base, exact=False),
                 source_end=MediaTime.from_seconds(Fraction(str(raw["end"])), source.time_base, exact=False),
                 title=raw["title"], hook=raw["hook"], category=raw["category"], reason=raw["reason"], scores=scores,
-                provider_provenance={"provider": type(self.provider).__name__, "prompt_version": "v2.1-editorial-schema-v1", "tier": "strong"},
+                provider_provenance={"provider": type(self.provider).__name__, "prompt_version": "v2.1-editorial-schema-v2", "tier": "strong"},
                 editorial_quality=EditorialQuality(**raw["quality"]) if raw.get("quality") else EditorialQuality(
                     hook=scores.hook, curiosity=scores.hook, conflict_tension=scores.emotion,
                     payoff=scores.payoff, standalone_clarity=scores.standalone_context,
                     novelty=round((scores.hook + scores.standalone_context) / 2), energy=scores.emotion,
                     dead_space_density=0, entertainment=round((scores.hook + scores.payoff + scores.emotion) / 3),
                 ), candidate_window_id=str(raw.get("window_id")) if raw.get("window_id") else None,
+                payoff=str(raw.get("payoff", "")), story_structure={str(key): str(value) for key, value in raw.get("story_structure", {}).items()},
             )
             try:
                 validate_candidate(candidate, source.duration, transcript, min_seconds=contract.minimum, max_seconds=max(180, contract.hard_maximum))
             except ValueError:
+                metrics.rejection_reasons["invalid_source_range_or_duration"] = metrics.rejection_reasons.get("invalid_source_range_or_duration", 0) + 1
                 continue
             candidate = enforce_candidate_duration(candidate, contract, transcript, source)
-            if candidate is None or not passes_editorial_gates(candidate):
+            if candidate is None:
+                metrics.rejection_reasons["cannot_fit_hard_maximum_with_payoff"] = metrics.rejection_reasons.get("cannot_fit_hard_maximum_with_payoff", 0) + 1
+                continue
+            if not passes_editorial_gates(candidate):
+                metrics.rejection_reasons["hook_clarity_or_payoff_gate"] = metrics.rejection_reasons.get("hook_clarity_or_payoff_gate", 0) + 1
                 continue
             candidates.append(candidate)
             if metrics.time_to_first_candidate_seconds is None:
                 metrics.time_to_first_candidate_seconds = round(time.perf_counter() - started, 6)
             if progress:
                 progress(len(candidates), f"{len(candidates)} candidate{'s' if len(candidates) != 1 else ''} ready")
+        metrics.stages.append(AnalysisStageMetric(
+            "deterministic_validation", round(time.perf_counter() - validation_started, 6),
+            input_count=len(raw_candidates), output_count=len(candidates),
+        ))
+        comparison_started = time.perf_counter()
         ranked, suppressed = comparative_rank(candidates, story_style=profile.story_style if profile else "default", limit=profile.desired_output_count if profile else None)
         metrics.candidate_counts.update({"planned": len(raw_candidates), "validated": len(candidates), "qualified": len(ranked), "duplicates_suppressed": len(suppressed)})
         metrics.stages.append(AnalysisStageMetric(
-            "deterministic_validation_and_comparison", round(time.perf_counter() - stage_started, 6),
-            input_count=len(raw_candidates), output_count=len(ranked),
+            "comparative_ranking", round(time.perf_counter() - comparison_started, 6),
+            input_count=len(candidates), output_count=len(ranked),
         ))
         finish_metrics(metrics, started)
         return ranked, windows, metrics

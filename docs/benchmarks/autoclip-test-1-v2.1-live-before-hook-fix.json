@@ -1,0 +1,302 @@
+{
+  "benchmark_version": "v2.1-live-provider-v1",
+  "live": {
+    "candidate_window_count": 120,
+    "candidates": [
+      {
+        "duration_seconds": 21.2,
+        "entertainment_score": 85,
+        "hook": "TikTok is the reason why I'm here now.",
+        "id": "candidate_v2_1",
+        "payoff": "The creator candidly attributes their viral rise and current fame directly to clips posted on TikTok.",
+        "quality": {
+          "conflict_tension": 60,
+          "curiosity": 82,
+          "dead_space_density": 89,
+          "energy": 80,
+          "entertainment": 85,
+          "hook": 88,
+          "novelty": 75,
+          "payoff": 85,
+          "policy_version": "v2.1-quality-v1",
+          "standalone_clarity": 90
+        },
+        "source_ranges": [
+          {
+            "end": 6008.5,
+            "start": 5987.3
+          }
+        ],
+        "title": "How TikTok Made Me Blow Up",
+        "topic": "Social Media & Fame"
+      },
+      {
+        "duration_seconds": 20.36,
+        "entertainment_score": 80,
+        "hook": "You love when people underestimate you because you love proving people wrong.",
+        "id": "candidate_v2_2",
+        "payoff": "A discussion on using underestimation as fuel to prove critics wrong in competition.",
+        "quality": {
+          "conflict_tension": 75,
+          "curiosity": 78,
+          "dead_space_density": 95,
+          "energy": 82,
+          "entertainment": 80,
+          "hook": 82,
+          "novelty": 70,
+          "payoff": 80,
+          "policy_version": "v2.1-quality-v1",
+          "standalone_clarity": 85
+        },
+        "source_ranges": [
+          {
+            "end": 5265.28,
+            "start": 5244.92
+          }
+        ],
+        "title": "Proving The Doubters Wrong",
+        "topic": "Competitive Mindset"
+      }
+    ],
+    "metrics": {
+      "ai_request_count": 2,
+      "cache_hits": 1,
+      "cache_misses": 2,
+      "candidate_counts": {
+        "duplicates_suppressed": 0,
+        "fast_retained": 4,
+        "local_shortlist": 24,
+        "local_windows": 120,
+        "planned": 2,
+        "qualified": 2,
+        "validated": 2
+      },
+      "completed_at": "2026-10-07T02:30:03Z",
+      "id": "analysis_1791340178355150300",
+      "pipeline_version": "v2.1-hybrid-v1",
+      "provider_errors": [],
+      "provider_retries": 0,
+      "rejection_reasons": {},
+      "stages": [
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 20490,
+          "cache_hit": true,
+          "duration_seconds": 1.065966,
+          "input_count": 3407,
+          "output_count": 24,
+          "provider_retries": 0,
+          "stage": "local_preprocessing"
+        },
+        {
+          "ai_request_count": 1,
+          "approximate_context_words": 1797,
+          "cache_hit": false,
+          "duration_seconds": 17.358944,
+          "input_count": 24,
+          "output_count": 4,
+          "provider_retries": 0,
+          "stage": "fast_ranking"
+        },
+        {
+          "ai_request_count": 1,
+          "approximate_context_words": 293,
+          "cache_hit": false,
+          "duration_seconds": 6.512843,
+          "input_count": 4,
+          "output_count": 2,
+          "provider_retries": 0,
+          "stage": "strong_planning"
+        },
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 0,
+          "cache_hit": false,
+          "duration_seconds": 0.467575,
+          "input_count": 2,
+          "output_count": 2,
+          "provider_retries": 0,
+          "stage": "deterministic_validation"
+        },
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 0,
+          "cache_hit": false,
+          "duration_seconds": 0.000183,
+          "input_count": 2,
+          "output_count": 2,
+          "provider_retries": 0,
+          "stage": "comparative_ranking"
+        }
+      ],
+      "started_at": "2026-10-07T02:29:38Z",
+      "time_to_first_candidate_seconds": 25.173334,
+      "total_duration_seconds": 25.407443,
+      "transcript_revision": "183b20ab69b6272200cbc31cbf9decbb6ee90b16aaf6892eaf2cb46b2d6d7294",
+      "warnings": []
+    }
+  },
+  "profile": {
+    "hard_maximum": 28.0,
+    "minimum": 12.0,
+    "preferred_maximum": 25.0,
+    "requested_outputs": 5,
+    "style": "high-energy",
+    "target": 20.0
+  },
+  "provider": {
+    "fast_configuration": "structured FAST window-ranking prompt; balanced mode; one bounded retry",
+    "fast_model": "gemini-3.6-flash",
+    "name": "GeminiProvider",
+    "strong_configuration": "structured STRONG editorial-planning prompt; balanced mode; one bounded retry",
+    "strong_model": "gemini-3.6-flash"
+  },
+  "provider_attempt_history": {
+    "initial_fast_503_retries": 1
+  },
+  "source": {
+    "duration_seconds": 6601.720125,
+    "project": "AutoClip_Test_1",
+    "segment_count": 3407,
+    "transcript_revision": "183b20ab69b6272200cbc31cbf9decbb6ee90b16aaf6892eaf2cb46b2d6d7294",
+    "transcription_invoked": false,
+    "word_count": 20490
+  },
+  "warm": {
+    "candidate_window_count": 120,
+    "candidates": [
+      {
+        "duration_seconds": 21.2,
+        "entertainment_score": 85,
+        "hook": "TikTok is the reason why I'm here now.",
+        "id": "candidate_v2_1",
+        "payoff": "The creator candidly attributes their viral rise and current fame directly to clips posted on TikTok.",
+        "quality": {
+          "conflict_tension": 60,
+          "curiosity": 82,
+          "dead_space_density": 89,
+          "energy": 80,
+          "entertainment": 85,
+          "hook": 88,
+          "novelty": 75,
+          "payoff": 85,
+          "policy_version": "v2.1-quality-v1",
+          "standalone_clarity": 90
+        },
+        "source_ranges": [
+          {
+            "end": 6008.5,
+            "start": 5987.3
+          }
+        ],
+        "title": "How TikTok Made Me Blow Up",
+        "topic": "Social Media & Fame"
+      },
+      {
+        "duration_seconds": 20.36,
+        "entertainment_score": 80,
+        "hook": "You love when people underestimate you because you love proving people wrong.",
+        "id": "candidate_v2_2",
+        "payoff": "A discussion on using underestimation as fuel to prove critics wrong in competition.",
+        "quality": {
+          "conflict_tension": 75,
+          "curiosity": 78,
+          "dead_space_density": 95,
+          "energy": 82,
+          "entertainment": 80,
+          "hook": 82,
+          "novelty": 70,
+          "payoff": 80,
+          "policy_version": "v2.1-quality-v1",
+          "standalone_clarity": 85
+        },
+        "source_ranges": [
+          {
+            "end": 5265.28,
+            "start": 5244.92
+          }
+        ],
+        "title": "Proving The Doubters Wrong",
+        "topic": "Competitive Mindset"
+      }
+    ],
+    "metrics": {
+      "ai_request_count": 0,
+      "cache_hits": 3,
+      "cache_misses": 0,
+      "candidate_counts": {
+        "duplicates_suppressed": 0,
+        "fast_retained": 4,
+        "local_shortlist": 24,
+        "local_windows": 120,
+        "planned": 2,
+        "qualified": 2,
+        "validated": 2
+      },
+      "completed_at": "2026-10-07T02:30:05Z",
+      "id": "analysis_1791340203762760700",
+      "pipeline_version": "v2.1-hybrid-v1",
+      "provider_errors": [],
+      "provider_retries": 0,
+      "rejection_reasons": {},
+      "stages": [
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 20490,
+          "cache_hit": true,
+          "duration_seconds": 1.061027,
+          "input_count": 3407,
+          "output_count": 24,
+          "provider_retries": 0,
+          "stage": "local_preprocessing"
+        },
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 1797,
+          "cache_hit": true,
+          "duration_seconds": 0.030729,
+          "input_count": 24,
+          "output_count": 4,
+          "provider_retries": 0,
+          "stage": "fast_ranking"
+        },
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 293,
+          "cache_hit": true,
+          "duration_seconds": 0.022052,
+          "input_count": 4,
+          "output_count": 2,
+          "provider_retries": 0,
+          "stage": "strong_planning"
+        },
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 0,
+          "cache_hit": false,
+          "duration_seconds": 0.476171,
+          "input_count": 2,
+          "output_count": 2,
+          "provider_retries": 0,
+          "stage": "deterministic_validation"
+        },
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 0,
+          "cache_hit": false,
+          "duration_seconds": 0.000156,
+          "input_count": 2,
+          "output_count": 2,
+          "provider_retries": 0,
+          "stage": "comparative_ranking"
+        }
+      ],
+      "started_at": "2026-10-07T02:30:03Z",
+      "time_to_first_candidate_seconds": 1.337492,
+      "total_duration_seconds": 1.593441,
+      "transcript_revision": "183b20ab69b6272200cbc31cbf9decbb6ee90b16aaf6892eaf2cb46b2d6d7294",
+      "warnings": []
+    },
+    "same_candidate_ids": true
+  }
+}

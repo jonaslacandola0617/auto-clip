@@ -98,6 +98,13 @@ class V2DurationTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertLessEqual(float(result.source_end.seconds - result.source_start.seconds), 25)
 
+    def test_boundary_refinement_moves_declared_hook_out_of_conversational_runway(self) -> None:
+        candidate = ClipCandidate("c", mt(0), mt(25), "Race", "They agreed to race because", "entertainment", "reason", ScoreDimensions(90, 90, 90, 80), {})
+        result = enforce_candidate_duration(candidate, DurationContract(12, 20, 25, 28), long_transcript(), sample_source())
+        self.assertIsNotNone(result)
+        self.assertEqual(float(result.source_start.seconds), 10.0)
+        self.assertGreaterEqual(float(result.source_end.seconds - result.source_start.seconds), 12)
+
     def test_overlong_candidate_without_payoff_is_rejected(self) -> None:
         transcript = long_transcript()
         transcript.segments[4].text = "The conversation continued"

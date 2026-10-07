@@ -135,6 +135,8 @@ class AnalysisRunMetrics:
     cache_hits: int = 0
     cache_misses: int = 0
     candidate_counts: dict[str, int] = field(default_factory=dict)
+    rejection_reasons: dict[str, int] = field(default_factory=dict)
+    provider_errors: list[str] = field(default_factory=list)
     stages: list[AnalysisStageMetric] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -160,6 +162,8 @@ class ClipCandidate:
     provider_provenance: dict[str, str]
     editorial_quality: EditorialQuality | None = None
     candidate_window_id: str | None = None
+    payoff: str = ""
+    story_structure: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

@@ -210,14 +210,19 @@ class GeminiProvider(AIProvider):
         quality_schema = {"type": "OBJECT", "required": list(quality_fields), "properties": {
             name: {"type": "INTEGER", "minimum": 0, "maximum": 100} for name in quality_fields
         }}
-        required = [*sorted(CANDIDATE_REQUIRED_FIELDS), "window_id", "quality"]
+        structure_schema = {"type": "OBJECT", "required": ["hook", "context", "development", "payoff"], "properties": {
+            "hook": {"type": "STRING"}, "context": {"type": "STRING"},
+            "development": {"type": "STRING"}, "payoff": {"type": "STRING"},
+        }}
+        required = [*sorted(CANDIDATE_REQUIRED_FIELDS), "window_id", "quality", "payoff", "story_structure"]
         item = {"type": "OBJECT", "required": required, "properties": {
             "window_id": {"type": "STRING"}, "start": {"type": "NUMBER"}, "end": {"type": "NUMBER"},
             "title": {"type": "STRING"}, "hook": {"type": "STRING"}, "category": {"type": "STRING"},
-            "reason": {"type": "STRING"}, "scores": score_schema, "quality": quality_schema,
+            "reason": {"type": "STRING"}, "payoff": {"type": "STRING"}, "story_structure": structure_schema,
+            "scores": score_schema, "quality": quality_schema,
         }}
         payload = self._generate_structured({
-            "task": "STRONG editorial planning. Produce only source-grounded contiguous Highlight Clip plans from the shortlisted windows. Start with useful content, preserve cold-viewer context, and end with a real payoff. Obey the hard maximum; return fewer plans rather than filler.",
+            "task": "STRONG editorial planning. Produce only source-grounded contiguous Highlight Clip plans from the shortlisted windows. The declared hook must occur within the first 3 seconds of the selected range. Start with useful content, preserve cold-viewer context, and end with a real source-grounded payoff. Return explicit hook/context/development/payoff structure. Obey the hard maximum; return fewer plans rather than filler. In quality, dead_space_density means actual unwanted dead-space amount: 0 is none and 100 is mostly dead space.",
             "windows": windows, "metadata": metadata,
         }, {"type": "OBJECT", "required": ["candidates"], "properties": {"candidates": {"type": "ARRAY", "items": item}}})
         candidates = payload.get("candidates")
@@ -232,6 +237,9 @@ class GeminiProvider(AIProvider):
             quality = candidate.get("quality")
             if not isinstance(quality, dict) or set(quality) != set(quality_fields) or any(not isinstance(value, int) or not 0 <= value <= 100 for value in quality.values()):
                 raise AIResponseError("STRONG plan quality does not match schema")
+            structure = candidate.get("story_structure")
+            if not isinstance(structure, dict) or set(structure) != {"hook", "context", "development", "payoff"} or any(not isinstance(value, str) for value in structure.values()):
+                raise AIResponseError("STRONG plan story structure does not match schema")
         return candidates
 
     def find_candidates(self, analysis: dict[str, Any]) -> list[dict[str, Any]]:

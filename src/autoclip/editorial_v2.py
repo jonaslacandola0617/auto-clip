@@ -17,7 +17,7 @@ from .time import MediaTime
 
 PREPROCESSING_VERSION = "v2.1-window-v1"
 QUALITY_POLICY_VERSION = "v2.1-quality-v1"
-PROMPT_SCHEMA_VERSION = "v2.1-editorial-schema-v1"
+PROMPT_SCHEMA_VERSION = "v2.1-editorial-schema-v2"
 
 _HOOK_CUES = {"how", "why", "never", "secret", "actually", "challenge", "biggest", "best", "worst"}
 _PAYOFF_CUES = {"because", "therefore", "result", "answer", "won", "lost", "finally", "so"}
@@ -184,8 +184,28 @@ def refine_candidate_boundaries(candidate: ClipCandidate, transcript: Transcript
     return candidate
 
 
+def align_candidate_hook(candidate: ClipCandidate, contract: DurationContract, transcript: Transcript, source: MediaSource) -> ClipCandidate:
+    hook_tokens = {token for token in _words(candidate.hook) if token not in {"a", "an", "and", "are", "i", "is", "of", "on", "the", "to", "was", "you"}}
+    if not hook_tokens:
+        return candidate
+    for segment in transcript.segments:
+        if segment.end.seconds <= candidate.source_start.seconds or segment.start.seconds >= candidate.source_end.seconds:
+            continue
+        segment_tokens = set(_words(segment.corrected_text or segment.text))
+        shared = hook_tokens & segment_tokens
+        if len(shared) < min(3, len(hook_tokens)) and len(shared) / max(1, len(hook_tokens)) < .5:
+            continue
+        runway = float(segment.start.seconds - candidate.source_start.seconds)
+        remaining = float(candidate.source_end.seconds - segment.start.seconds)
+        if runway > 3 and remaining >= contract.minimum:
+            candidate.source_start = MediaTime.from_seconds(segment.start.seconds, source.time_base, exact=False)
+        break
+    return candidate
+
+
 def enforce_candidate_duration(candidate: ClipCandidate, contract: DurationContract, transcript: Transcript, source: MediaSource) -> ClipCandidate | None:
     candidate = refine_candidate_boundaries(candidate, transcript, source)
+    candidate = align_candidate_hook(candidate, contract, transcript, source)
     if float(candidate.source_end.seconds - candidate.source_start.seconds) <= contract.hard_maximum:
         return candidate
     # One bounded shortening attempt. End only at a transcript segment boundary.
@@ -293,6 +313,6 @@ def finish_metrics(metrics: AnalysisRunMetrics, started: float) -> None:
     metrics.completed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     metrics.ai_request_count = sum(item.ai_request_count for item in metrics.stages)
     metrics.provider_retries = sum(item.provider_retries for item in metrics.stages)
-    cacheable = [item for item in metrics.stages if item.stage != "deterministic_validation_and_comparison"]
+    cacheable = [item for item in metrics.stages if item.stage not in {"deterministic_validation", "comparative_ranking"}]
     metrics.cache_hits = sum(item.cache_hit for item in cacheable)
     metrics.cache_misses = sum(not item.cache_hit for item in cacheable)

@@ -78,12 +78,15 @@ export type ClipCandidate = {
   score: number;
   category: string;
   reason: string;
+  hook?: string;
+  payoff?: string;
+  story_structure?: Record<string, string>;
   quality?: EditorialQuality | null;
 };
 
 export type EditorialQuality = { hook: number; curiosity: number; conflict_tension: number; payoff: number; standalone_clarity: number; novelty: number; energy: number; dead_space_density: number; entertainment: number; policy_version: string };
 export type AnalysisStageMetric = { stage: string; duration_seconds: number; ai_request_count: number; provider_retries: number; input_count: number; output_count: number; approximate_context_words: number; cache_hit: boolean };
-export type AnalysisRunMetrics = { id: string; pipeline_version: string; transcript_revision: string; total_duration_seconds: number; time_to_first_candidate_seconds: number | null; ai_request_count: number; provider_retries: number; cache_hits: number; cache_misses: number; candidate_counts: Record<string, number>; stages: AnalysisStageMetric[]; warnings: string[] };
+export type AnalysisRunMetrics = { id: string; pipeline_version: string; transcript_revision: string; total_duration_seconds: number; time_to_first_candidate_seconds: number | null; ai_request_count: number; provider_retries: number; cache_hits: number; cache_misses: number; candidate_counts: Record<string, number>; rejection_reasons: Record<string, number>; provider_errors: string[]; stages: AnalysisStageMetric[]; warnings: string[] };
 
 export type ManualCrop = { enabled: boolean; crop_x: number; crop_y: number; scale: number };
 

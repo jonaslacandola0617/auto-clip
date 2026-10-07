@@ -10,6 +10,7 @@ from .models import (
     CampaignProfile, CampaignValidation, EditSequence, EnhancementPlan, ProductionRun,
     StoryConcept, VisualEditPlan, WorkflowProfile,
 )
+from .editorial_v2 import quality_score
 
 
 def validate_workflow_profile(profile: WorkflowProfile) -> None:
@@ -19,6 +20,9 @@ def validate_workflow_profile(profile: WorkflowProfile) -> None:
         raise ValueError("desired output count must be between 1 and 20")
     if profile.min_duration_seconds <= 0 or profile.max_duration_seconds < profile.min_duration_seconds:
         raise ValueError("workflow duration range is invalid")
+    profile.duration_contract
+    if profile.analysis_mode not in {"fast", "balanced", "best_quality"}:
+        raise ValueError("unsupported analysis mode")
     if profile.generation_mode not in {"concepts_only", "prepare_previews"}:
         raise ValueError("unsupported workflow generation mode")
     if profile.pacing not in {"relaxed", "balanced", "fast"}:
@@ -104,9 +108,12 @@ def select_diverse_edits(
     validate_workflow_profile(profile)
     qualified = [item for item in sequences if (
         item.status == "ready" and item.integrity.status == "passed" and item.editorial_review
-        and item.editorial_review.accepted and profile.min_duration_seconds <= item.duration_seconds <= profile.max_duration_seconds
+        and item.editorial_review.accepted and profile.duration_contract.minimum <= item.duration_seconds <= profile.duration_contract.hard_maximum
     )]
-    qualified.sort(key=lambda item: (-(item.editorial_review.coherence_score if item.editorial_review else 0), item.id))
+    qualified.sort(key=lambda item: (
+        -(quality_score(item.editorial_quality, profile.story_style) if item.editorial_quality else item.editorial_review.coherence_score if item.editorial_review else 0),
+        item.id,
+    ))
     selected: list[EditSequence] = []
     suppressed: list[str] = []
     for candidate in qualified:

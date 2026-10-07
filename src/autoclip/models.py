@@ -65,6 +65,81 @@ class Transcript:
 
 
 @dataclass(slots=True)
+class DurationContract:
+    minimum: float
+    target: float
+    preferred_maximum: float
+    hard_maximum: float
+
+    def __post_init__(self) -> None:
+        values = (self.minimum, self.target, self.preferred_maximum, self.hard_maximum)
+        if self.minimum <= 0 or tuple(sorted(values)) != values:
+            raise ValueError("duration contract must satisfy 0 < minimum <= target <= preferred maximum <= hard maximum")
+
+
+@dataclass(slots=True)
+class EditorialQuality:
+    hook: int = 0
+    curiosity: int = 0
+    conflict_tension: int = 0
+    payoff: int = 0
+    standalone_clarity: int = 0
+    novelty: int = 0
+    energy: int = 0
+    dead_space_density: int = 0
+    entertainment: int = 0
+    policy_version: str = "v2.1-quality-v1"
+
+
+@dataclass(slots=True)
+class CandidateWindow:
+    id: str
+    source_id: str
+    source_start: MediaTime
+    source_end: MediaTime
+    transcript_segment_ids: list[str]
+    transcript_word_ids: list[str]
+    text_summary: str
+    local_signals: dict[str, float] = field(default_factory=dict)
+    provenance: dict[str, str] = field(default_factory=dict)
+    preprocessing_version: str = "v2.1-window-v1"
+
+    @property
+    def duration_seconds(self) -> float:
+        return float(self.source_end.seconds - self.source_start.seconds)
+
+
+@dataclass(slots=True)
+class AnalysisStageMetric:
+    stage: str
+    duration_seconds: float
+    ai_request_count: int = 0
+    provider_retries: int = 0
+    input_count: int = 0
+    output_count: int = 0
+    approximate_context_words: int = 0
+    cache_hit: bool = False
+
+
+@dataclass(slots=True)
+class AnalysisRunMetrics:
+    id: str
+    pipeline_version: str
+    transcript_revision: str
+    started_at: str
+    completed_at: str | None = None
+    total_duration_seconds: float = 0.0
+    time_to_first_candidate_seconds: float | None = None
+    ai_request_count: int = 0
+    provider_retries: int = 0
+    cache_hits: int = 0
+    cache_misses: int = 0
+    candidate_counts: dict[str, int] = field(default_factory=dict)
+    stages: list[AnalysisStageMetric] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class ScoreDimensions:
     hook: int
     standalone_context: int
@@ -83,6 +158,8 @@ class ClipCandidate:
     reason: str
     scores: ScoreDimensions
     provider_provenance: dict[str, str]
+    editorial_quality: EditorialQuality | None = None
+    candidate_window_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -199,6 +276,7 @@ class EditSequence:
     preview_path: str | None = None
     render_path: str | None = None
     editorial_review: EditorialReviewResult | None = None
+    editorial_quality: EditorialQuality | None = None
 
     @property
     def duration_seconds(self) -> float:
@@ -485,6 +563,10 @@ class WorkflowProfile:
     target_platform: str = "shorts"
     min_duration_seconds: float = 20.0
     max_duration_seconds: float = 45.0
+    target_duration_seconds: float | None = 30.0
+    preferred_max_duration_seconds: float | None = None
+    hard_max_duration_seconds: float | None = None
+    analysis_mode: str = "balanced"
     desired_output_count: int = 3
     pacing: str = "balanced"
     hook_priority: str = "strong"
@@ -496,7 +578,31 @@ class WorkflowProfile:
     music_policy: str = "off"
     export_defaults: list[str] = field(default_factory=lambda: ["mp4", "srt"])
     campaign_profile_id: str | None = None
-    version: str = "phase3a-v1"
+    version: str = "v2.1-profile-v1"
+
+    @property
+    def duration_contract(self) -> DurationContract:
+        maximum = float(self.max_duration_seconds)
+        target = float(self.target_duration_seconds if self.target_duration_seconds is not None else maximum)
+        preferred = float(self.preferred_max_duration_seconds if self.preferred_max_duration_seconds is not None else maximum)
+        hard = float(self.hard_max_duration_seconds if self.hard_max_duration_seconds is not None else maximum)
+        target = max(float(self.min_duration_seconds), min(target, hard))
+        preferred = max(target, min(preferred, hard))
+        return DurationContract(float(self.min_duration_seconds), target, preferred, hard)
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "WorkflowProfile":
+        migrated = dict(value)
+        legacy_maximum = float(migrated.get("max_duration_seconds", 45.0))
+        if "target_duration_seconds" not in migrated:
+            migrated["target_duration_seconds"] = legacy_maximum
+        if "preferred_max_duration_seconds" not in migrated:
+            migrated["preferred_max_duration_seconds"] = legacy_maximum
+        if "hard_max_duration_seconds" not in migrated:
+            migrated["hard_max_duration_seconds"] = legacy_maximum
+        if "analysis_mode" not in migrated:
+            migrated["analysis_mode"] = "balanced"
+        return cls(**migrated)
 
 
 @dataclass(slots=True)
@@ -600,6 +706,8 @@ class AutoClipProject:
     workflow_profiles: list[WorkflowProfile] = field(default_factory=list)
     campaign_profiles: list[CampaignProfile] = field(default_factory=list)
     production_runs: list[ProductionRun] = field(default_factory=list)
+    candidate_windows: list[CandidateWindow] = field(default_factory=list)
+    analysis_runs: list[AnalysisRunMetrics] = field(default_factory=list)
     analysis_revision: str | None = None
     schema_version: str = SCHEMA_VERSION
 
@@ -609,7 +717,7 @@ class AutoClipProject:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AutoClipProject":
         schema_version = data.get("schema_version", "0.2-phase0")
-        if schema_version not in {"0.2-phase0", "0.3-phase2a", "0.3-phase2a1", "0.3-phase2b", "0.3-phase2c", SCHEMA_VERSION}:
+        if schema_version not in {"0.2-phase0", "0.3-phase2a", "0.3-phase2a1", "0.3-phase2b", "0.3-phase2c", "0.4-phase3a", SCHEMA_VERSION}:
             raise ValueError(f"unsupported schema version: {data.get('schema_version')}")
         sources = [MediaSource(
             **{**s, "duration": _mt(s["duration"]), "frame_rate": Rational.parse(s["frame_rate"]),
@@ -623,6 +731,7 @@ class AutoClipProject:
         candidates = [ClipCandidate(**{
             **c, "source_start": _mt(c["source_start"]), "source_end": _mt(c["source_end"]),
             "scores": ScoreDimensions(**c["scores"]),
+            "editorial_quality": EditorialQuality(**c["editorial_quality"]) if c.get("editorial_quality") else None,
         }) for c in data.get("candidates", [])]
         timelines = [Timeline(
             id=t["id"], canvas_width=t["canvas_width"], canvas_height=t["canvas_height"],
@@ -653,7 +762,8 @@ class AutoClipProject:
                "segments": [EditSegment(**{**segment, "source_in": _mt(segment["source_in"]), "source_out": _mt(segment["source_out"])}) for segment in sequence.get("segments", [])],
                "actions": [EditorialAction(**action) for action in sequence.get("actions", [])],
                "integrity": EditorialIntegrityResult(**sequence["integrity"]),
-               "editorial_review": EditorialReviewResult(**sequence["editorial_review"]) if sequence.get("editorial_review") else None},
+               "editorial_review": EditorialReviewResult(**sequence["editorial_review"]) if sequence.get("editorial_review") else None,
+               "editorial_quality": EditorialQuality(**sequence["editorial_quality"]) if sequence.get("editorial_quality") else None},
         ) for sequence in data.get("edit_sequences", [])]
         visual_plans = [VisualEditPlan(
             **{**plan,
@@ -673,12 +783,18 @@ class AutoClipProject:
                "sound_cues": [SoundCue(**item) for item in plan.get("sound_cues", [])],
                "music_track": MusicBed(**plan["music_track"]) if plan.get("music_track") else None},
         ) for plan in data.get("enhancement_plans", [])]
-        workflow_profiles = [WorkflowProfile(**profile) for profile in data.get("workflow_profiles", [])]
+        workflow_profiles = [WorkflowProfile.from_dict(profile) for profile in data.get("workflow_profiles", [])]
         campaign_profiles = [CampaignProfile(**profile) for profile in data.get("campaign_profiles", [])]
         production_runs = [ProductionRun(**{
             **run,
             "campaign_validations": {key: CampaignValidation(**value) for key, value in run.get("campaign_validations", {}).items()},
         }) for run in data.get("production_runs", [])]
+        candidate_windows = [CandidateWindow(**{
+            **window, "source_start": _mt(window["source_start"]), "source_end": _mt(window["source_end"]),
+        }) for window in data.get("candidate_windows", [])]
+        analysis_runs = [AnalysisRunMetrics(**{
+            **run, "stages": [AnalysisStageMetric(**stage) for stage in run.get("stages", [])],
+        }) for run in data.get("analysis_runs", [])]
         return cls(
             id=data["id"], name=data["name"], sources=sources, transcripts=transcripts,
             candidates=candidates, timelines=timelines, reframe_tracks=reframes,
@@ -686,5 +802,6 @@ class AutoClipProject:
             story_concepts=stories, edit_sequences=sequences, visual_edit_plans=visual_plans,
             enhancement_plans=enhancement_plans, workflow_profiles=workflow_profiles,
             campaign_profiles=campaign_profiles, production_runs=production_runs,
+            candidate_windows=candidate_windows, analysis_runs=analysis_runs,
             analysis_revision=data.get("analysis_revision"), schema_version=SCHEMA_VERSION,
         )

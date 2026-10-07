@@ -33,6 +33,7 @@ from .production import (
     validate_workflow_profile, write_manifest,
 )
 from .intelligent_edit import construct_candidate_stories, plan_reviewed_sequence, reflow_sequence, review_editorial_quality, validate_integrity
+from .editorial_v2 import create_shorter_sequence_variant, quality_score, quality_from_scores
 from .pipeline import CorePipeline
 from .release import MODEL_APPROX_BYTES, ReleasePaths, require_free_space, sanitize_diagnostic_text
 from .storage import Workspace, atomic_write_json, load_project, save_project
@@ -273,7 +274,7 @@ class DesktopService:
 
     def _candidate_summary(self, candidate: Any) -> dict[str, Any]:
         scores = candidate.scores
-        score = scores.hook * .35 + scores.standalone_context * .25 + scores.payoff * .30 + scores.emotion * .10
+        score = quality_score(candidate.editorial_quality) if candidate.editorial_quality else scores.hook * .35 + scores.standalone_context * .25 + scores.payoff * .30 + scores.emotion * .10
         return {
             "id": candidate.id, "title": candidate.title,
             "start_seconds": float(candidate.source_start.seconds),
@@ -281,6 +282,7 @@ class DesktopService:
             "duration_seconds": float(candidate.source_end.seconds - candidate.source_start.seconds),
             "source": "ai", "score": round(score, 1), "category": candidate.category,
             "reason": candidate.reason,
+            "quality": asdict(candidate.editorial_quality) if candidate.editorial_quality else None,
         }
 
     def _clip_summary(self, workspace: Workspace, project: AutoClipProject, clip: ProjectClip) -> dict[str, Any]:
@@ -353,6 +355,7 @@ class DesktopService:
             "workflow_profiles": [asdict(profile) for profile in workflows.values()],
             "campaign_profiles": [asdict(profile) for profile in campaigns.values()],
             "production_runs": [{**asdict(run), "summary": production_summary(run)} for run in project.production_runs],
+            "analysis_metrics": asdict(project.analysis_runs[-1]) if project.analysis_runs else None,
             "analysis_revision": project.analysis_revision,
         }
 
@@ -398,6 +401,8 @@ class DesktopService:
         })
         removed_ai_ids = {clip.id for clip in project.clips if clip.source == "ai"}
         project.candidates.clear()
+        project.candidate_windows.clear()
+        project.analysis_runs.clear()
         project.moments.clear()
         project.story_concepts.clear()
         project.edit_sequences.clear()
@@ -681,7 +686,7 @@ class DesktopService:
         if not self.profile_library_path.exists():
             return [], []
         raw = json.loads(self.profile_library_path.read_text(encoding="utf-8"))
-        return ([WorkflowProfile(**item) for item in raw.get("workflow_profiles", [])],
+        return ([WorkflowProfile.from_dict(item) for item in raw.get("workflow_profiles", [])],
                 [CampaignProfile(**item) for item in raw.get("campaign_profiles", [])])
 
     def _save_profile_library(self, workflows: list[WorkflowProfile], campaigns: list[CampaignProfile]) -> None:
@@ -698,6 +703,10 @@ class DesktopService:
             target_platform=str(payload.get("target_platform", existing.target_platform if existing else "shorts")),
             min_duration_seconds=float(payload.get("min_duration_seconds", existing.min_duration_seconds if existing else 15)),
             max_duration_seconds=float(payload.get("max_duration_seconds", existing.max_duration_seconds if existing else 45)),
+            target_duration_seconds=float(payload.get("target_duration_seconds", existing.target_duration_seconds if existing and existing.target_duration_seconds is not None else 30)),
+            preferred_max_duration_seconds=float(payload.get("preferred_max_duration_seconds", existing.preferred_max_duration_seconds if existing and existing.preferred_max_duration_seconds is not None else payload.get("max_duration_seconds", 45))),
+            hard_max_duration_seconds=float(payload.get("hard_max_duration_seconds", existing.hard_max_duration_seconds if existing and existing.hard_max_duration_seconds is not None else payload.get("max_duration_seconds", 45))),
+            analysis_mode=str(payload.get("analysis_mode", existing.analysis_mode if existing else "balanced")),
             desired_output_count=int(payload.get("desired_output_count", existing.desired_output_count if existing else 3)),
             pacing=str(payload.get("pacing", existing.pacing if existing else "fast")),
             hook_priority=str(payload.get("hook_priority", existing.hook_priority if existing else "strong")),
@@ -1056,12 +1065,22 @@ class DesktopService:
         update(0.1, "Analyzing transcript", True)
         if event.is_set():
             return
-        pipeline = CorePipeline(workspace, FFmpegService(), self._transcriber(settings["whisper_model"]), provider, prompt_version="phase1b-v1")
-        update(0.3, "Analyzing transcript sections", False)
-        candidates = pipeline.analyze_source(project.sources[0], transcript)
-        update(0.85, "Ranking clips", False)
+        pipeline = CorePipeline(workspace, FFmpegService(), self._transcriber(settings["whisper_model"]), provider, prompt_version="v2.1-editorial-schema-v1")
+        profile = project.workflow_profiles[-1] if project.workflow_profiles else WorkflowProfile(
+            "v2_default", "V2 Balanced", min_duration_seconds=12, max_duration_seconds=28,
+            target_duration_seconds=20, preferred_max_duration_seconds=25, hard_max_duration_seconds=28,
+            desired_output_count=5, analysis_mode="balanced",
+        )
+        update(0.24, "Preparing candidate windows", False)
+        candidates, windows, metrics = pipeline.analyze_source_v2(
+            project.sources[0], transcript, profile=profile,
+            progress=lambda count, stage: update(min(.82, .42 + count * .05), stage, False),
+        )
+        update(0.86, "Final comparative ranking", False)
         project.candidates = candidates
-        project.analysis_revision = workspace.cache_key("highlight_analysis_revision", {"transcript_revision": transcript.revision_id, "prompt": pipeline.prompt_version, "provider": type(provider).__name__, "model": provider.model})
+        project.candidate_windows = windows
+        project.analysis_runs = [*project.analysis_runs[-9:], metrics]
+        project.analysis_revision = workspace.cache_key("highlight_analysis_revision", {"transcript_revision": transcript.revision_id, "prompt": pipeline.prompt_version, "provider": type(provider).__name__, "model": provider.model, "profile_revision": profile.revision, "duration_contract": asdict(profile.duration_contract)})
         save_project(workspace, project)
         update(0.96, f"{len(candidates)} clips found" if candidates else "No suitable clips were found", False)
 
@@ -1093,6 +1112,30 @@ class DesktopService:
         update(0.72, "Planning source-grounded edit sequences", False)
         moment_map = {item.id: item for item in moments}
         sequences = [plan_reviewed_sequence(story, moment_map, transcript, source) for story in stories]
+        profile = project.workflow_profiles[-1] if project.workflow_profiles else WorkflowProfile(
+            "v2_default", "V2 Balanced", min_duration_seconds=12, max_duration_seconds=28,
+            target_duration_seconds=20, preferred_max_duration_seconds=25, hard_max_duration_seconds=28,
+            desired_output_count=5, analysis_mode="balanced",
+        )
+        contracted: list[EditSequence] = []
+        candidate_by_story = {story.id: candidate for story, candidate in zip(stories, project.candidates)}
+        for sequence in sequences:
+            candidate = candidate_by_story.get(sequence.story_concept_id)
+            if candidate:
+                sequence.editorial_quality = candidate.editorial_quality or quality_from_scores(candidate.scores)
+            if sequence.duration_seconds > profile.duration_contract.hard_maximum:
+                shortened = create_shorter_sequence_variant(sequence, profile.duration_contract)
+                if shortened is None:
+                    sequence.status = "rejected"
+                else:
+                    sequence = shortened
+                    story = next((item for item in stories if item.id == sequence.story_concept_id), None)
+                    if story:
+                        sequence.integrity = validate_integrity(sequence, transcript, moment_map, allow_truthful_hook_reorder=bool(story.coherence.get("allow_truthful_hook_reorder")))
+                        sequence.editorial_review = review_editorial_quality(story, sequence, moment_map)
+                        sequence.status = "ready" if sequence.integrity.status == "passed" and sequence.editorial_review.accepted else "rejected"
+            contracted.append(sequence)
+        sequences = contracted
         project.moments, project.story_concepts, project.edit_sequences = moments, stories, sequences
         project.visual_edit_plans = []
         project.enhancement_plans = []
@@ -1107,7 +1150,7 @@ class DesktopService:
         run = next((item for item in project.production_runs if item.id == run_id), None)
         if run is None:
             raise RuntimeError("The production run is unavailable.")
-        profile = WorkflowProfile(**run.workflow_profile_snapshot)
+        profile = WorkflowProfile.from_dict(run.workflow_profile_snapshot)
         update(.08, "Reusing cached moments and accepted Smart Edits", True)
         selected, suppressed = select_diverse_edits(project.edit_sequences, {item.id: item for item in project.story_concepts}, profile)
         run.generated_edit_ids = [item.id for item in selected]
@@ -1191,7 +1234,7 @@ class DesktopService:
         run = next((item for item in project.production_runs if item.id == run_id), None)
         if run is None:
             raise RuntimeError("The production run is unavailable.")
-        profile = WorkflowProfile(**run.workflow_profile_snapshot)
+        profile = WorkflowProfile.from_dict(run.workflow_profile_snapshot)
         campaign = CampaignProfile(**run.campaign_profile_snapshot) if run.campaign_profile_snapshot else None
         package_stem = campaign.name if campaign else f"{project.name}-{run.id}"
         final_root = collision_safe_path(workspace.root / "exports", package_stem, "")

@@ -32,6 +32,23 @@ class AIProvider(ABC):
     def construct_stories(self, moments: list[dict[str, Any]], metadata: dict[str, Any]) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    def rank_candidate_windows(self, windows: list[dict[str, Any]], metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        """FAST tier. Providers may override; deterministic fallback keeps adapters compatible."""
+        return [{"window_id": item["id"], "retain": True, "rank_score": int(item.get("local_signals", {}).get("local_score", 50)),
+                 "topic": item.get("text_summary", ""), "reason": "local deterministic ranking"} for item in windows]
+
+    def plan_edits(self, windows: list[dict[str, Any]], metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        """STRONG tier. The compatibility implementation batches shortlisted windows once."""
+        chunks = [{"start": item["start"], "end": item["end"], "text": item["text"],
+                   "word_ids": item.get("word_ids", []), "segment_ids": item.get("segment_ids", [])} for item in windows]
+        return self.find_candidates(self.analyze_transcript(chunks, metadata))
+
+    def compare_candidates(self, candidates: list[dict[str, Any]], metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        return self.rank_candidates(candidates)
+
+    def repair_structured_result(self, payload: Any, metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        return validate_candidate_payload(payload)
+
 
 def validate_candidate_payload(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(payload, dict) or set(payload) != {"candidates"} or not isinstance(payload["candidates"], list):
@@ -162,6 +179,60 @@ class GeminiProvider(AIProvider):
         if not isinstance(stories, list):
             raise AIResponseError("story response is missing stories")
         return stories
+
+    def rank_candidate_windows(self, windows: list[dict[str, Any]], metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        item = {"type": "OBJECT", "required": ["window_id", "retain", "rank_score", "topic", "reason"], "properties": {
+            "window_id": {"type": "STRING"}, "retain": {"type": "BOOLEAN"},
+            "rank_score": {"type": "INTEGER", "minimum": 0, "maximum": 100},
+            "topic": {"type": "STRING"}, "reason": {"type": "STRING"},
+        }}
+        safe_windows = [{key: window[key] for key in ("id", "start", "end", "text_summary", "text", "local_signals") if key in window} for window in windows]
+        payload = self._generate_structured({
+            "task": "FAST editorial screening. Rank source-grounded windows for hook, payoff, standalone clarity, and entertainment. Retain only windows worth expensive planning.",
+            "windows": safe_windows, "metadata": metadata,
+        }, {"type": "OBJECT", "required": ["rankings"], "properties": {"rankings": {"type": "ARRAY", "items": item}}})
+        rankings = payload.get("rankings")
+        if not isinstance(rankings, list):
+            raise AIResponseError("FAST ranking response is missing rankings")
+        known = {item["id"] for item in windows}
+        if any(not isinstance(item, dict) or item.get("window_id") not in known for item in rankings):
+            raise AIResponseError("FAST ranking references an unknown candidate window")
+        return rankings
+
+    def plan_edits(self, windows: list[dict[str, Any]], metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        quality_fields = ("hook", "curiosity", "conflict_tension", "payoff", "standalone_clarity", "novelty", "energy", "dead_space_density", "entertainment")
+        score_schema = {"type": "OBJECT", "required": sorted(SCORE_REQUIRED_FIELDS), "properties": {
+            "hook": {"type": "INTEGER", "minimum": 0, "maximum": 100},
+            "standalone_context": {"type": "INTEGER", "minimum": 0, "maximum": 100},
+            "payoff": {"type": "INTEGER", "minimum": 0, "maximum": 100},
+            "emotion": {"type": "INTEGER", "minimum": 0, "maximum": 100},
+        }}
+        quality_schema = {"type": "OBJECT", "required": list(quality_fields), "properties": {
+            name: {"type": "INTEGER", "minimum": 0, "maximum": 100} for name in quality_fields
+        }}
+        required = [*sorted(CANDIDATE_REQUIRED_FIELDS), "window_id", "quality"]
+        item = {"type": "OBJECT", "required": required, "properties": {
+            "window_id": {"type": "STRING"}, "start": {"type": "NUMBER"}, "end": {"type": "NUMBER"},
+            "title": {"type": "STRING"}, "hook": {"type": "STRING"}, "category": {"type": "STRING"},
+            "reason": {"type": "STRING"}, "scores": score_schema, "quality": quality_schema,
+        }}
+        payload = self._generate_structured({
+            "task": "STRONG editorial planning. Produce only source-grounded contiguous Highlight Clip plans from the shortlisted windows. Start with useful content, preserve cold-viewer context, and end with a real payoff. Obey the hard maximum; return fewer plans rather than filler.",
+            "windows": windows, "metadata": metadata,
+        }, {"type": "OBJECT", "required": ["candidates"], "properties": {"candidates": {"type": "ARRAY", "items": item}}})
+        candidates = payload.get("candidates")
+        known = {item["id"] for item in windows}
+        if not isinstance(candidates, list):
+            raise AIResponseError("STRONG planning response is missing candidates")
+        for candidate in candidates:
+            if not isinstance(candidate, dict) or candidate.get("window_id") not in known:
+                raise AIResponseError("STRONG plan references an unknown candidate window")
+            legacy = {key: candidate[key] for key in CANDIDATE_REQUIRED_FIELDS if key in candidate}
+            validate_candidate_payload({"candidates": [legacy]})
+            quality = candidate.get("quality")
+            if not isinstance(quality, dict) or set(quality) != set(quality_fields) or any(not isinstance(value, int) or not 0 <= value <= 100 for value in quality.values()):
+                raise AIResponseError("STRONG plan quality does not match schema")
+        return candidates
 
     def find_candidates(self, analysis: dict[str, Any]) -> list[dict[str, Any]]:
         return validate_candidate_payload(analysis)

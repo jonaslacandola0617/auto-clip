@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import threading
+import time
+from dataclasses import asdict
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -10,8 +12,12 @@ from typing import Any, Callable
 from .ai import AIProvider
 from .candidates import normalize_and_deduplicate, validate_candidate
 from .media import FFmpegService, MediaOperationCancelled, media_source_from_probe
-from .models import ClipCandidate, MediaSource, Moment, ScoreDimensions, StoryConcept, Transcript, TranscriptSegment, TranscriptWord
+from .models import AnalysisRunMetrics, AnalysisStageMetric, CandidateWindow, ClipCandidate, EditorialQuality, MediaSource, Moment, ScoreDimensions, StoryConcept, Transcript, TranscriptSegment, TranscriptWord, WorkflowProfile
 from .intelligent_edit import consolidate_moments
+from .editorial_v2 import (
+    bounded_provider_call, cache_identity, comparative_rank, create_candidate_windows,
+    duration_contract_for, enforce_candidate_duration, finish_metrics, passes_editorial_gates, prefilter_windows,
+)
 from .storage import Workspace, atomic_write_json
 from .time import MediaTime
 from .transcription import FasterWhisperTranscriber, TranscriptionCancelled
@@ -72,6 +78,155 @@ class CorePipeline:
             validate_candidate(candidate, source.duration, transcript)
             candidates.append(candidate)
         return normalize_and_deduplicate(candidates)
+
+    def analyze_source_v2(
+        self,
+        source: MediaSource,
+        transcript: Transcript,
+        *,
+        profile: WorkflowProfile | None = None,
+        progress: Callable[[int, str], None] | None = None,
+    ) -> tuple[list[ClipCandidate], list[CandidateWindow], AnalysisRunMetrics]:
+        """V2 hybrid funnel: deterministic windows, FAST shortlist, STRONG batch plan, local gates."""
+        started = time.perf_counter()
+        metrics = AnalysisRunMetrics(
+            id=f"analysis_{time.time_ns()}", pipeline_version="v2.1-hybrid-v1",
+            transcript_revision=transcript.revision_id,
+            started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
+        contract = duration_contract_for(profile)
+        mode = profile.analysis_mode if profile else "balanced"
+
+        stage_started = time.perf_counter()
+        windows = create_candidate_windows(source, transcript, contract)
+        shortlist = prefilter_windows(windows, mode=mode)
+        window_key = self.workspace.cache_key("v2_windows", {
+            "transcript_revision": transcript.revision_id, "preprocessing_revision": "v2.1-window-v1",
+            "duration_contract": asdict(contract),
+        })
+        window_path = self.workspace.root / "analysis" / f"v2-windows-{window_key}.json"
+        window_cache_hit = window_path.exists()
+        if not window_cache_hit:
+            atomic_write_json(window_path, {"windows": [asdict(item) for item in windows]})
+        metrics.candidate_counts.update({"local_windows": len(windows), "local_shortlist": len(shortlist)})
+        metrics.stages.append(AnalysisStageMetric(
+            "local_preprocessing", round(time.perf_counter() - stage_started, 6),
+            input_count=len(transcript.segments), output_count=len(shortlist),
+            approximate_context_words=len(transcript.words),
+            cache_hit=window_cache_hit,
+        ))
+        if not shortlist:
+            finish_metrics(metrics, started)
+            return [], windows, metrics
+
+        segment_by_id = {segment.id: segment for segment in transcript.segments}
+        provider_windows = [{
+            "id": item.id, "start": float(item.source_start.seconds), "end": float(item.source_end.seconds),
+            "text_summary": item.text_summary,
+            "text": " ".join((segment_by_id[segment_id].corrected_text or segment_by_id[segment_id].text) for segment_id in item.transcript_segment_ids if segment_id in segment_by_id),
+            "word_ids": item.transcript_word_ids, "segment_ids": item.transcript_segment_ids,
+            "local_signals": item.local_signals,
+        } for item in shortlist]
+        identity = cache_identity(transcript, profile, type(self.provider).__name__, getattr(self.provider, "model", "fixture"))
+
+        fast_key = self.workspace.cache_key("v2_fast_ranking", identity | {"window_ids": [item.id for item in shortlist]})
+        fast_path = self.workspace.root / "analysis" / f"v2-fast-{fast_key}.json"
+        stage_started = time.perf_counter()
+        fast_retry_count = [0]
+        if fast_path.exists():
+            rankings = json.loads(fast_path.read_text(encoding="utf-8"))["rankings"]
+            fast_hit = True
+        else:
+            rankings = bounded_provider_call(
+                lambda: self.provider.rank_candidate_windows(provider_windows, {"tier": "fast", "mode": mode, "duration_contract": identity["duration_contract"]}),
+                max_retries=0 if mode == "fast" else 1,
+                on_retry=lambda value: fast_retry_count.__setitem__(0, value),
+            )
+            atomic_write_json(fast_path, {"rankings": rankings})
+            fast_hit = False
+        rank_by_id = {str(item.get("window_id")): item for item in rankings if isinstance(item, dict)}
+        retained = [item for item in provider_windows if rank_by_id.get(item["id"], {}).get("retain", False)]
+        retained.sort(key=lambda item: (-int(rank_by_id[item["id"]].get("rank_score", 0)), item["id"]))
+        strong_limits = {"fast": 4, "balanced": 8, "best_quality": 12}
+        retained = retained[:strong_limits[mode]]
+        metrics.candidate_counts["fast_retained"] = len(retained)
+        metrics.stages.append(AnalysisStageMetric(
+            "fast_ranking", round(time.perf_counter() - stage_started, 6),
+            ai_request_count=0 if fast_hit else 1, provider_retries=fast_retry_count[0],
+            input_count=len(shortlist), output_count=len(retained),
+            approximate_context_words=sum(len(item["text"].split()) for item in provider_windows), cache_hit=fast_hit,
+        ))
+        if not retained:
+            finish_metrics(metrics, started)
+            return [], windows, metrics
+
+        plan_key = self.workspace.cache_key("v2_strong_planning", identity | {"window_ids": [item["id"] for item in retained]})
+        plan_path = self.workspace.root / "analysis" / f"v2-plans-{plan_key}.json"
+        stage_started = time.perf_counter()
+        strong_retry_count = [0]
+        if plan_path.exists():
+            raw_candidates = json.loads(plan_path.read_text(encoding="utf-8"))["candidates"]
+            plan_hit = True
+        else:
+            raw_candidates = bounded_provider_call(
+                lambda: self.provider.plan_edits(retained, {
+                    "tier": "strong", "mode": mode, "duration_seconds": float(source.duration.seconds),
+                    "min_clip_seconds": contract.minimum, "target_clip_seconds": contract.target,
+                    "max_clip_seconds": contract.hard_maximum, "language": transcript.language,
+                }),
+                max_retries=0 if mode == "fast" else 1,
+                on_retry=lambda value: strong_retry_count.__setitem__(0, value),
+            )
+            atomic_write_json(plan_path, {"candidates": raw_candidates})
+            plan_hit = False
+        metrics.stages.append(AnalysisStageMetric(
+            "strong_planning", round(time.perf_counter() - stage_started, 6),
+            ai_request_count=0 if plan_hit else 1, provider_retries=strong_retry_count[0],
+            input_count=len(retained), output_count=len(raw_candidates),
+            approximate_context_words=sum(len(item["text"].split()) for item in retained), cache_hit=plan_hit,
+        ))
+
+        stage_started = time.perf_counter()
+        candidates: list[ClipCandidate] = []
+        retained_by_id = {item["id"]: item for item in retained}
+        for index, raw in enumerate(raw_candidates):
+            planned_window = retained_by_id.get(str(raw.get("window_id", "")))
+            if raw.get("window_id") and (planned_window is None or float(raw["start"]) < float(planned_window["start"]) or float(raw["end"]) > float(planned_window["end"])):
+                continue
+            scores = ScoreDimensions(**{**{"emotion": 0}, **raw["scores"]})
+            candidate = ClipCandidate(
+                id=f"candidate_v2_{index + 1}",
+                source_start=MediaTime.from_seconds(Fraction(str(raw["start"])), source.time_base, exact=False),
+                source_end=MediaTime.from_seconds(Fraction(str(raw["end"])), source.time_base, exact=False),
+                title=raw["title"], hook=raw["hook"], category=raw["category"], reason=raw["reason"], scores=scores,
+                provider_provenance={"provider": type(self.provider).__name__, "prompt_version": "v2.1-editorial-schema-v1", "tier": "strong"},
+                editorial_quality=EditorialQuality(**raw["quality"]) if raw.get("quality") else EditorialQuality(
+                    hook=scores.hook, curiosity=scores.hook, conflict_tension=scores.emotion,
+                    payoff=scores.payoff, standalone_clarity=scores.standalone_context,
+                    novelty=round((scores.hook + scores.standalone_context) / 2), energy=scores.emotion,
+                    dead_space_density=0, entertainment=round((scores.hook + scores.payoff + scores.emotion) / 3),
+                ), candidate_window_id=str(raw.get("window_id")) if raw.get("window_id") else None,
+            )
+            try:
+                validate_candidate(candidate, source.duration, transcript, min_seconds=contract.minimum, max_seconds=max(180, contract.hard_maximum))
+            except ValueError:
+                continue
+            candidate = enforce_candidate_duration(candidate, contract, transcript, source)
+            if candidate is None or not passes_editorial_gates(candidate):
+                continue
+            candidates.append(candidate)
+            if metrics.time_to_first_candidate_seconds is None:
+                metrics.time_to_first_candidate_seconds = round(time.perf_counter() - started, 6)
+            if progress:
+                progress(len(candidates), f"{len(candidates)} candidate{'s' if len(candidates) != 1 else ''} ready")
+        ranked, suppressed = comparative_rank(candidates, story_style=profile.story_style if profile else "default", limit=profile.desired_output_count if profile else None)
+        metrics.candidate_counts.update({"planned": len(raw_candidates), "validated": len(candidates), "qualified": len(ranked), "duplicates_suppressed": len(suppressed)})
+        metrics.stages.append(AnalysisStageMetric(
+            "deterministic_validation_and_comparison", round(time.perf_counter() - stage_started, 6),
+            input_count=len(raw_candidates), output_count=len(ranked),
+        ))
+        finish_metrics(metrics, started)
+        return ranked, windows, metrics
 
     def discover_moments(self, source: MediaSource, transcript: Transcript, *, preset: str = "default") -> list[Moment]:
         key = self.workspace.cache_key("moments", {"transcript_revision": transcript.revision_id, "prompt": "moments-phase2a-v1", "provider": type(self.provider).__name__, "model": getattr(self.provider, "model", "fixture"), "preset": preset})

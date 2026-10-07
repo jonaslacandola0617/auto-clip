@@ -118,7 +118,10 @@ function ProductionSection({ profiles, campaigns, runs, sequences, busy, onComma
   const [showCampaign, setShowCampaign] = useState(false);
   const [profileName, setProfileName] = useState("Fast Shorts");
   const [minDuration, setMinDuration] = useState(15);
-  const [maxDuration, setMaxDuration] = useState(45);
+  const [targetDuration, setTargetDuration] = useState(20);
+  const [preferredMaxDuration, setPreferredMaxDuration] = useState(25);
+  const [maxDuration, setMaxDuration] = useState(28);
+  const [analysisMode, setAnalysisMode] = useState<"fast" | "balanced" | "best_quality">("balanced");
   const [campaignName, setCampaignName] = useState("Campaign Delivery");
   const [requiredHandle, setRequiredHandle] = useState("");
   const [requiredCta, setRequiredCta] = useState("");
@@ -139,8 +142,8 @@ function ProductionSection({ profiles, campaigns, runs, sequences, busy, onComma
 
     {showProfile || !profiles.length ? <div className="production-form">
       <label className="field"><span className="field__label">Profile name</span><Input value={profileName} onChange={(event) => setProfileName(event.target.value)} /></label>
-      <div className="timing-grid"><label className="field"><span className="field__label">Minimum seconds</span><Input type="number" min="5" value={minDuration} onChange={(event) => setMinDuration(Number(event.target.value))} /></label><label className="field"><span className="field__label">Maximum seconds</span><Input type="number" min={minDuration} value={maxDuration} onChange={(event) => setMaxDuration(Number(event.target.value))} /></label><label className="field"><span className="field__label">Outputs</span><Input type="number" min="1" max="20" value={requestedCount} onChange={(event) => setRequestedCount(Number(event.target.value))} /></label></div>
-      <Button variant="primary" onClick={async () => { await onCommand("save_workflow_profile", { name: profileName, generation_mode: "concepts_only", target_platform: "shorts", min_duration_seconds: minDuration, max_duration_seconds: maxDuration, desired_output_count: requestedCount, pacing: "fast", hook_priority: "strong", story_style: "self-contained", framing: "automatic", visual_emphasis: "restrained", caption_preset: "word_highlight", enhancement_policy: "restrained", music_policy: "off", export_defaults: ["mp4", "srt", "otio", "premiere_xml"] }); setShowProfile(false); }}>Save workflow profile</Button>
+      <div className="timing-grid"><label className="field"><span className="field__label">Minimum seconds</span><Input type="number" min="5" value={minDuration} onChange={(event) => setMinDuration(Number(event.target.value))} /></label><label className="field"><span className="field__label">Target seconds</span><Input type="number" min={minDuration} value={targetDuration} onChange={(event) => setTargetDuration(Number(event.target.value))} /></label><label className="field"><span className="field__label">Preferred maximum</span><Input type="number" min={targetDuration} value={preferredMaxDuration} onChange={(event) => setPreferredMaxDuration(Number(event.target.value))} /></label><label className="field"><span className="field__label">Hard maximum</span><Input type="number" min={preferredMaxDuration} value={maxDuration} onChange={(event) => setMaxDuration(Number(event.target.value))} /></label><label className="field"><span className="field__label">Analysis mode</span><Select value={analysisMode} onChange={(event) => setAnalysisMode(event.target.value as typeof analysisMode)}><option value="fast">Fast</option><option value="balanced">Balanced</option><option value="best_quality">Best Quality</option></Select></label><label className="field"><span className="field__label">Outputs (maximum)</span><Input type="number" min="1" max="20" value={requestedCount} onChange={(event) => setRequestedCount(Number(event.target.value))} /></label></div>
+      <Button variant="primary" onClick={async () => { await onCommand("save_workflow_profile", { name: profileName, generation_mode: "concepts_only", target_platform: "shorts", min_duration_seconds: minDuration, target_duration_seconds: targetDuration, preferred_max_duration_seconds: preferredMaxDuration, hard_max_duration_seconds: maxDuration, max_duration_seconds: maxDuration, analysis_mode: analysisMode, desired_output_count: requestedCount, pacing: "fast", hook_priority: "strong", story_style: "self-contained", framing: "automatic", visual_emphasis: "restrained", caption_preset: "word_highlight", enhancement_policy: "restrained", music_policy: "off", export_defaults: ["mp4", "srt", "otio", "premiere_xml"] }); setShowProfile(false); }}>Save workflow profile</Button>
     </div> : null}
 
     {profiles.length ? <div className="production-setup">
@@ -193,6 +196,7 @@ function CandidateReview({ candidate, onClose, onAccept }: { candidate: ClipCand
       <p className="muted">{clock(candidate.start_seconds)}–{clock(candidate.end_seconds)} · {candidate.duration_seconds.toFixed(1)}s</p>
       <div className="button-row"><Badge>{candidate.category}</Badge><Badge>Score {candidate.score}</Badge></div>
       <p>{candidate.reason}</p>
+      {candidate.quality ? <p className="muted">Editorial quality: hook {candidate.quality.hook} · clarity {candidate.quality.standalone_clarity} · payoff {candidate.quality.payoff} · entertainment {candidate.quality.entertainment}</p> : null}
       <Button variant="primary" onClick={onAccept}>Accept and create clip</Button>
     </Panel>
   );

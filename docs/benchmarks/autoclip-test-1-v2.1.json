@@ -1,0 +1,207 @@
+{
+  "baseline": {
+    "actual_network_request_count": 0,
+    "cache_state": "cold orchestration with cached provider response replay",
+    "candidate_counts": {
+      "discovered": 5,
+      "duplicates_suppressed": 0,
+      "moments": 16,
+      "planned": 4,
+      "qualified": 1,
+      "stories": 4
+    },
+    "candidate_durations_seconds": [
+      180.0,
+      180.0,
+      80.0,
+      132.04,
+      150.0
+    ],
+    "conceptual_ai_request_count": 1,
+    "context": {
+      "approximate_words": 20490,
+      "chunks": 29
+    },
+    "sequence_durations_seconds": [
+      21.68,
+      37.44,
+      17.56,
+      22.4
+    ],
+    "stage_seconds": {
+      "candidate_discovery_and_ranking": 0.038812,
+      "diversity_deduplication": 8.2e-05,
+      "editorial_review_and_rebuild": 0.010365,
+      "moment_and_story_construction": 0.33998,
+      "transcript_chunking": 0.023168
+    },
+    "time_to_first_candidate_seconds": 0.06198,
+    "total_analysis_seconds": 0.412551
+  },
+  "benchmark_version": "v2.1-benchmark-v1",
+  "comparison_limitations": [
+    "Both runs replay the same persisted provider response and therefore measure local orchestration, not Gemini latency.",
+    "The v2 FAST and STRONG boundaries are exercised, but their calls are in-process fixture calls.",
+    "A healthy-provider benchmark remains required before claiming the PRD latency targets pass."
+  ],
+  "provider": {
+    "disclosure": "Provider latency is not represented because no configured credential was available.",
+    "mode": "cached-response replay",
+    "network_requests": 0
+  },
+  "source": {
+    "duration_seconds": 6601.720125,
+    "project": "AutoClip_Test_1",
+    "segment_count": 3407,
+    "transcript_revision": "183b20ab69b6272200cbc31cbf9decbb6ee90b16aaf6892eaf2cb46b2d6d7294",
+    "word_count": 20490
+  },
+  "v2": {
+    "cache_state": "cold orchestration with the same cached provider response replay",
+    "candidate_window_count": 120,
+    "duplicates_suppressed": [],
+    "hard_maximum_seconds": 28.0,
+    "metrics": {
+      "ai_request_count": 2,
+      "cache_hits": 0,
+      "cache_misses": 3,
+      "candidate_counts": {
+        "duplicates_suppressed": 0,
+        "fast_retained": 8,
+        "local_shortlist": 24,
+        "local_windows": 120,
+        "planned": 5,
+        "qualified": 0,
+        "validated": 0
+      },
+      "completed_at": "2026-10-07T02:10:06Z",
+      "id": "analysis_1791339005362356500",
+      "pipeline_version": "v2.1-hybrid-v1",
+      "provider_retries": 0,
+      "stages": [
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 20490,
+          "cache_hit": false,
+          "duration_seconds": 0.350385,
+          "input_count": 3407,
+          "output_count": 24,
+          "provider_retries": 0,
+          "stage": "local_preprocessing"
+        },
+        {
+          "ai_request_count": 1,
+          "approximate_context_words": 1797,
+          "cache_hit": false,
+          "duration_seconds": 0.003174,
+          "input_count": 24,
+          "output_count": 8,
+          "provider_retries": 0,
+          "stage": "fast_ranking"
+        },
+        {
+          "ai_request_count": 1,
+          "approximate_context_words": 589,
+          "cache_hit": false,
+          "duration_seconds": 0.001683,
+          "input_count": 8,
+          "output_count": 5,
+          "provider_retries": 0,
+          "stage": "strong_planning"
+        },
+        {
+          "ai_request_count": 0,
+          "approximate_context_words": 0,
+          "cache_hit": false,
+          "duration_seconds": 0.578612,
+          "input_count": 5,
+          "output_count": 0,
+          "provider_retries": 0,
+          "stage": "deterministic_validation_and_comparison"
+        }
+      ],
+      "started_at": "2026-10-07T02:10:05Z",
+      "time_to_first_candidate_seconds": null,
+      "total_duration_seconds": 0.934619,
+      "transcript_revision": "183b20ab69b6272200cbc31cbf9decbb6ee90b16aaf6892eaf2cb46b2d6d7294",
+      "warnings": []
+    },
+    "qualified_highlight_count": 0,
+    "qualified_highlight_durations_seconds": [],
+    "strict_existing_sequence_acceptance": [
+      {
+        "duration_seconds": 17.56,
+        "title": "IShowSpeed Challenges Tyreek Hill to a 40-Yard Dash"
+      }
+    ],
+    "wall_seconds": 0.934692,
+    "warm_cache": {
+      "metrics": {
+        "ai_request_count": 0,
+        "cache_hits": 3,
+        "cache_misses": 0,
+        "candidate_counts": {
+          "duplicates_suppressed": 0,
+          "fast_retained": 8,
+          "local_shortlist": 24,
+          "local_windows": 120,
+          "planned": 5,
+          "qualified": 0,
+          "validated": 0
+        },
+        "completed_at": "2026-10-07T02:10:07Z",
+        "id": "analysis_1791339006296631500",
+        "pipeline_version": "v2.1-hybrid-v1",
+        "provider_retries": 0,
+        "stages": [
+          {
+            "ai_request_count": 0,
+            "approximate_context_words": 20490,
+            "cache_hit": true,
+            "duration_seconds": 0.32587,
+            "input_count": 3407,
+            "output_count": 24,
+            "provider_retries": 0,
+            "stage": "local_preprocessing"
+          },
+          {
+            "ai_request_count": 0,
+            "approximate_context_words": 1797,
+            "cache_hit": true,
+            "duration_seconds": 0.018543,
+            "input_count": 24,
+            "output_count": 8,
+            "provider_retries": 0,
+            "stage": "fast_ranking"
+          },
+          {
+            "ai_request_count": 0,
+            "approximate_context_words": 589,
+            "cache_hit": true,
+            "duration_seconds": 0.017207,
+            "input_count": 8,
+            "output_count": 5,
+            "provider_retries": 0,
+            "stage": "strong_planning"
+          },
+          {
+            "ai_request_count": 0,
+            "approximate_context_words": 0,
+            "cache_hit": false,
+            "duration_seconds": 0.55788,
+            "input_count": 5,
+            "output_count": 0,
+            "provider_retries": 0,
+            "stage": "deterministic_validation_and_comparison"
+          }
+        ],
+        "started_at": "2026-10-07T02:10:06Z",
+        "time_to_first_candidate_seconds": null,
+        "total_duration_seconds": 0.920127,
+        "transcript_revision": "183b20ab69b6272200cbc31cbf9decbb6ee90b16aaf6892eaf2cb46b2d6d7294",
+        "warnings": []
+      },
+      "wall_seconds": 0.920204
+    }
+  }
+}

@@ -53,6 +53,7 @@ export type ProjectState = {
   workflow_profiles: WorkflowProfile[];
   campaign_profiles: CampaignProfile[];
   production_runs: ProductionRun[];
+  analysis_metrics?: AnalysisRunMetrics | null;
   analysis_revision: string | null;
 };
 
@@ -77,7 +78,12 @@ export type ClipCandidate = {
   score: number;
   category: string;
   reason: string;
+  quality?: EditorialQuality | null;
 };
+
+export type EditorialQuality = { hook: number; curiosity: number; conflict_tension: number; payoff: number; standalone_clarity: number; novelty: number; energy: number; dead_space_density: number; entertainment: number; policy_version: string };
+export type AnalysisStageMetric = { stage: string; duration_seconds: number; ai_request_count: number; provider_retries: number; input_count: number; output_count: number; approximate_context_words: number; cache_hit: boolean };
+export type AnalysisRunMetrics = { id: string; pipeline_version: string; transcript_revision: string; total_duration_seconds: number; time_to_first_candidate_seconds: number | null; ai_request_count: number; provider_retries: number; cache_hits: number; cache_misses: number; candidate_counts: Record<string, number>; stages: AnalysisStageMetric[]; warnings: string[] };
 
 export type ManualCrop = { enabled: boolean; crop_x: number; crop_y: number; scale: number };
 
@@ -112,7 +118,7 @@ export type VisualPlanSummary = { id: string; revision: number; framing_mode: "a
 export type EnhancementItem = { id: string; timeline_start: number; timeline_end?: number; duration?: number; text?: string; asset_id?: string; reason?: string; purpose?: string; enabled: boolean };
 export type EnhancementPlanSummary = { id: string; revision: number; status: string; warnings: string[]; broll_items: EnhancementItem[]; graphic_items: EnhancementItem[]; sound_cues: EnhancementItem[]; music_track: ({ asset_id: string; reason: string; enabled: boolean } | null) };
 export type EditSequence = { id: string; story_concept_id: string; title: string; duration_seconds: number; segment_count: number; integrity: EditorialIntegrity; editorial_review: EditorialReview | null; status: string; revision: number; preview_path: string | null; render_path: string | null; visual_plan?: VisualPlanSummary | null; enhancement_plan?: EnhancementPlanSummary | null; segments: EditSegment[] };
-export type WorkflowProfile = { id: string; name: string; revision: number; generation_mode: "concepts_only" | "prepare_previews"; target_platform: string; min_duration_seconds: number; max_duration_seconds: number; desired_output_count: number; pacing: "relaxed" | "balanced" | "fast"; hook_priority: string; story_style: string; framing: string; visual_emphasis: string; caption_preset: ProjectClip["caption_preset"]; enhancement_policy: "off" | "restrained" | "automatic"; music_policy: "off" | "optional"; export_defaults: string[]; campaign_profile_id: string | null; version: string };
+export type WorkflowProfile = { id: string; name: string; revision: number; generation_mode: "concepts_only" | "prepare_previews"; target_platform: string; min_duration_seconds: number; max_duration_seconds: number; target_duration_seconds?: number | null; preferred_max_duration_seconds?: number | null; hard_max_duration_seconds?: number | null; analysis_mode?: "fast" | "balanced" | "best_quality"; desired_output_count: number; pacing: "relaxed" | "balanced" | "fast"; hook_priority: string; story_style: string; framing: string; visual_emphasis: string; caption_preset: ProjectClip["caption_preset"]; enhancement_policy: "off" | "restrained" | "automatic"; music_policy: "off" | "optional"; export_defaults: string[]; campaign_profile_id: string | null; version: string };
 export type CampaignProfile = { id: string; name: string; revision: number; creator: string; target_platform: string; min_duration_seconds: number; max_duration_seconds: number; required_handle: string; required_cta: string; required_text: string[]; hashtags: string[]; watermark_required: boolean; forbidden_terms: string[]; content_notes: string; target_deliverables: number; export_naming: string; version: string };
 export type CampaignValidation = { state: "passed_checks" | "needs_review" | "failed_checks"; checks: Array<{ name: string; state: string; detail: string }>; warnings: string[] };
 export type ProductionRun = { id: string; workflow_profile_id: string; workflow_profile_revision: number; campaign_profile_id: string | null; campaign_profile_revision: number | null; requested_count: number; generated_edit_ids: string[]; accepted_edit_ids: string[]; rejected_edit_ids: string[]; selected_edit_ids: string[]; edit_states: Record<string, { state: string; stage: string; error: string | null }>; campaign_validations: Record<string, CampaignValidation>; status: string; warnings: string[]; errors: string[]; output_package_path: string | null; summary: { requested: number; produced: number; approved: number; rendered: number; failed: number; needs_review: number } };
